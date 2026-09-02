@@ -44,6 +44,17 @@ func TestExitCode(t *testing.T) {
 	require.Equal(t, 0, clean.ExitCode("warning"))
 }
 
+func TestBuildNilSlicesMarshalAsEmptyArrays(t *testing.T) {
+	b, err := Build(Meta{Version: "v"}, nil, nil).JSON()
+	require.NoError(t, err)
+	s := string(b)
+
+	require.Contains(t, s, "\"findings\": []")
+	require.NotContains(t, s, "\"findings\": null")
+	require.Contains(t, s, "\"connectors\": []")
+	require.NotContains(t, s, "\"connectors\": null")
+}
+
 func TestJSONRoundTrips(t *testing.T) {
 	r := Build(Meta{Version: "1", GeneratedAt: time.Now()},
 		[]connector.Status{{Name: "k8s", Availability: connector.Availability{State: connector.StateAvailable}}},

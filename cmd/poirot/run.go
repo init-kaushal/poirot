@@ -49,14 +49,19 @@ func writeOutputs(dir string, r report.Report) error {
 	}
 	j, err := r.JSON()
 	if err != nil {
-		return err
+		return fmt.Errorf("render report json: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "report.json"), j, 0o644); err != nil {
-		return err
+	jsonPath := filepath.Join(dir, "report.json")
+	if err := os.WriteFile(jsonPath, j, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", jsonPath, err)
 	}
 	m, err := r.Markdown()
 	if err != nil {
-		return err
+		return fmt.Errorf("render report markdown: %w", err)
 	}
-	return os.WriteFile(filepath.Join(dir, "report.md"), m, 0o644)
+	mdPath := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(mdPath, m, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", mdPath, err)
+	}
+	return nil
 }

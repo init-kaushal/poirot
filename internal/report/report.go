@@ -46,7 +46,11 @@ func Build(meta Meta, statuses []connector.Status, findings []analyzer.Finding) 
 		meta.Tool = "poirot"
 	}
 
-	sorted := append([]analyzer.Finding(nil), findings...)
+	conns := make([]connector.Status, len(statuses))
+	copy(conns, statuses)
+
+	sorted := make([]analyzer.Finding, len(findings))
+	copy(sorted, findings)
 	sort.SliceStable(sorted, func(i, j int) bool {
 		a, b := sorted[i], sorted[j]
 		if a.Severity.Rank() != b.Severity.Rank() {
@@ -72,7 +76,7 @@ func Build(meta Meta, statuses []connector.Status, findings []analyzer.Finding) 
 		}
 	}
 
-	return Report{Meta: meta, Connectors: statuses, Findings: sorted}
+	return Report{Meta: meta, Connectors: conns, Findings: sorted}
 }
 
 // JSON renders the report as indented JSON with a trailing newline.

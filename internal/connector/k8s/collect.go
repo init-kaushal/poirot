@@ -116,7 +116,7 @@ func (c *Connector) targetNamespaces(ctx context.Context) ([]string, error) {
 	for _, e := range c.scope.Exclude {
 		excl[e] = true
 	}
-	var out []string
+	out := []string{}
 	for _, ns := range nsList.Items {
 		if !excl[ns.Name] {
 			out = append(out, ns.Name)

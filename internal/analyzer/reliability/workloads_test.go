@@ -90,3 +90,27 @@ func TestWarningEventClustersSkipWhenSpecificExists(t *testing.T) {
 	require.Empty(t, checkWarningEventClusters(snap, existing))
 	require.Len(t, checkWarningEventClusters(snap, nil), 1)
 }
+
+func TestWarningEventClustersReasonsAreSorted(t *testing.T) {
+	now := time.Now()
+	seen := metav1.NewTime(now.Add(-time.Minute))
+	obj := corev1.ObjectReference{Kind: "Pod", Namespace: "n", Name: "api-1"}
+	snap := &snapshot.Snapshot{
+		Meta: snapshot.Meta{CollectedAt: now, Lookback: time.Hour},
+		Events: []corev1.Event{
+			{Type: corev1.EventTypeWarning, Reason: "Unhealthy", Count: 1, LastTimestamp: seen, InvolvedObject: obj},
+			{Type: corev1.EventTypeWarning, Reason: "BackOff", Count: 1, LastTimestamp: seen, InvolvedObject: obj},
+			{Type: corev1.EventTypeWarning, Reason: "FailedMount", Count: 1, LastTimestamp: seen, InvolvedObject: obj},
+		},
+	}
+
+	fs := checkWarningEventClusters(snap, nil)
+	require.Len(t, fs, 1)
+
+	val, ok := fs[0].Evidence[0].Value.(map[string]any)
+	require.True(t, ok)
+	reasons, ok := val["reasons"].([]string)
+	require.True(t, ok)
+	require.Equal(t, []string{"BackOff", "FailedMount", "Unhealthy"}, reasons)
+	require.Contains(t, fs[0].Summary, "BackOff, FailedMount, Unhealthy")
+}

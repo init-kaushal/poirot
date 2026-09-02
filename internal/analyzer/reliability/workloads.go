@@ -2,6 +2,7 @@ package reliability
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -310,6 +311,7 @@ func checkWarningEventClusters(snap *snapshot.Snapshot, existing []analyzer.Find
 		for r := range g.reasons {
 			reasons = append(reasons, r)
 		}
+		sort.Strings(reasons)
 		out = append(out, finding(
 			"reliability/warning-events", analyzer.SeverityInfo, g.ref,
 			"Object has repeated Warning events",
