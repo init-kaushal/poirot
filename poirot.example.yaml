@@ -1,0 +1,42 @@
+# poirot configuration — copy to poirot.yaml and edit.
+# Every field shown here is optional except that poirot needs *some* way to
+# reach a cluster (a resolvable kubeconfig context, or in-cluster credentials).
+
+cluster:
+  # Path to a kubeconfig. Leave empty to use in-cluster credentials when running
+  # inside a pod, otherwise the standard resolution ($KUBECONFIG, then ~/.kube/config).
+  kubeconfig: ""
+  # Context to use. Empty = the kubeconfig's current-context.
+  context: ""
+
+scope:
+  # Namespaces to assess. Empty = every namespace except those in `exclude`.
+  namespaces: []
+  exclude: [kube-system, kube-node-lease]
+  # How far back event/age-based rules look.
+  lookback: 24h
+
+# Restrict the run to specific analyzers. Empty = all of them.
+# M1 only has "reliability".
+focus: []
+
+llm:
+  # M1 does not use an LLM. Valid values: anthropic | openai-compatible | none.
+  provider: none
+  model: claude-sonnet-5
+  maxToolCallsPerFinding: 6
+  maxFindingsInvestigated: 15
+
+output:
+  # report.json (canonical) and report.md are written here.
+  dir: ./poirot-out
+  # Which severity makes `poirot run` exit non-zero, for CI/CronJob gating.
+  # none | warning | critical
+  failOn: critical
+
+# --- Observability backends (later milestones; parsed but unused in M1) ---
+# connectors:
+#   promql:       { url: auto }                        # Prometheus / VictoriaMetrics / Thanos / Mimir  (M2)
+#   opencost:     { url: auto, estimateFallback: true } # cost / rightsizing                            (M4)
+#   alertmanager: { url: auto }                        # firing-alert correlation                       (M5)
+#   gitops:       { mode: auto }                       # auto | argocd | flux | disabled               (M5)

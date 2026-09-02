@@ -1,0 +1,107 @@
+# Deliberately broken workloads for exercising poirot's reliability rules
+# against a local cluster (kind / k3s / colima --kubernetes / minikube).
+#
+#   kubectl apply -f hack/demo-broken.yaml
+#   sleep 60                       # let crashes/OOMs accumulate a few restarts
+#   ./bin/poirot run -c poirot.yaml
+#   kubectl delete namespace poirot-demo   # teardown
+#
+# Between them these trip: reliability/{crashloop,restarts,warning-events,
+# image-pull,pending,oomkilled,latest-tag,no-limits,no-probes,single-replica,no-pdb}.
+
+apiVersion: v1
+kind: Namespace
+metadata: { name: poirot-demo }
+---
+# CrashLoopBackOff + high restart count + clustered Warning events
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: crasher, namespace: poirot-demo }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: crasher } }
+  template:
+    metadata: { labels: { app: crasher } }
+    spec:
+      containers:
+        - name: crasher
+          image: busybox:1.36
+          command: ["sh", "-c", "echo starting; sleep 3; exit 1"]
+---
+# ImagePullBackOff
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: badimage, namespace: poirot-demo }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: badimage } }
+  template:
+    metadata: { labels: { app: badimage } }
+    spec:
+      containers:
+        - name: app
+          image: registry.invalid/nope:v0
+---
+# Pending / unschedulable (impossible CPU request)
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: toobig, namespace: poirot-demo }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: toobig } }
+  template:
+    metadata: { labels: { app: toobig } }
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27
+          resources: { requests: { cpu: "200" } }
+---
+# OOMKilled — 300 MiB allocation against a 48 MiB limit (multi-arch image)
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: memhog, namespace: poirot-demo }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: memhog } }
+  template:
+    metadata: { labels: { app: memhog } }
+    spec:
+      containers:
+        - name: app
+          image: python:3.12-slim
+          command: ["python", "-c", "b=bytearray(300*1024*1024); import time; time.sleep(600)"]
+          resources: { limits: { memory: "48Mi" } }
+---
+# Risky-but-running: :latest tag, no resource limits, no probes, single replica
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: sloppy, namespace: poirot-demo }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: sloppy } }
+  template:
+    metadata: { labels: { app: sloppy } }
+    spec:
+      containers:
+        - name: web
+          image: nginx:latest
+---
+# Multi-replica workload with no PodDisruptionBudget
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: nopdb, namespace: poirot-demo }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: nopdb } }
+  template:
+    metadata: { labels: { app: nopdb } }
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 50m, memory: 32Mi }
+          readinessProbe:
+            httpGet: { path: /, port: 80 }
