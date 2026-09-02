@@ -10,5 +10,6 @@ func newRootCmd(version string) *cobra.Command {
 		SilenceUsage:  true,
 	}
 	root.AddCommand(newVersionCmd(version))
+	root.AddCommand(newRunCmd(version))
 	return root
 }
