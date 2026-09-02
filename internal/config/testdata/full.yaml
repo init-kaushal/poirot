@@ -1,0 +1,13 @@
+cluster:
+  kubeconfig: ~/.kube/config
+  context: prod
+scope:
+  namespaces: [payments, checkout]
+  lookback: 168h
+connectors:
+  promql: { url: "http://prom.mon:9090" }
+focus: [cost]
+llm:
+  provider: none
+output:
+  failOn: warning
