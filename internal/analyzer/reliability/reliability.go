@@ -29,7 +29,20 @@ func (a *Analyzer) Analyze(_ context.Context, snap *snapshot.Snapshot) ([]analyz
 	for _, r := range podRules {
 		out = append(out, r(snap)...)
 	}
-	// Task 8 appends workload/node/pvc/hpa/event rules here.
+	simpleWorkloadRules := []func(*snapshot.Snapshot) []analyzer.Finding{
+		checkSingleReplica,
+		checkNoResourceLimits,
+		checkNoProbes,
+		checkNoPDB,
+		checkLatestTag,
+		checkHPAMaxed,
+		checkNodePressure,
+		checkPVCUnbound,
+	}
+	for _, r := range simpleWorkloadRules {
+		out = append(out, r(snap)...)
+	}
+	out = append(out, checkWarningEventClusters(snap, out)...)
 	return out, nil
 }
 
