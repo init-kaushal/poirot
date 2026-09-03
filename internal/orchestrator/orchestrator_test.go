@@ -23,6 +23,18 @@ import (
 func testConfig() *config.Config {
 	c := config.Default()
 	c.LLM.Provider = "none"
+	// Keep M1-era tests hermetic: don't let the orchestrator build and probe a
+	// real promql connector. Tests that exercise the metrics/slo path opt back
+	// in with their own URL and an injected fake (see promqlConfig).
+	c.Connectors.PromQL.URL = "disabled"
+	return c
+}
+
+// promqlConfig is testConfig with promql registration re-enabled, so an injected
+// fake promql connector (opts.Promql) is registered and probed.
+func promqlConfig() *config.Config {
+	c := testConfig()
+	c.Connectors.PromQL.URL = "auto"
 	return c
 }
 
@@ -122,7 +134,7 @@ func TestRunCollectsMetricsAndRunsSLO(t *testing.T) {
 		pack[1].Expr: {{Labels: map[string]string{"namespace": "p", "pod": "x", "container": "c"}, Value: 0.99}},
 	}}
 
-	res, err := Run(context.Background(), Options{Config: testConfig(), Version: "t", K8s: src, Promql: fp})
+	res, err := Run(context.Background(), Options{Config: promqlConfig(), Version: "t", K8s: src, Promql: fp})
 	require.NoError(t, err)
 
 	var found bool
@@ -140,7 +152,9 @@ func TestRunSkipsSLOWhenPromqlAbsent(t *testing.T) {
 	src := k8s.NewWithClient(cs, "ctx", k8s.Scope{Lookback: time.Hour})
 	fp := fakePromql{state: connector.StateAbsent}
 
-	res, err := Run(context.Background(), Options{Config: testConfig(), Version: "t", K8s: src, Promql: fp})
+	// promql is registered (URL != "disabled") but probes absent, so slo must
+	// report as skipped via reg.Satisfied(["promql"]) == false.
+	res, err := Run(context.Background(), Options{Config: promqlConfig(), Version: "t", K8s: src, Promql: fp})
 	require.NoError(t, err)
 
 	var skipped bool

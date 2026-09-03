@@ -55,6 +55,13 @@ func TestBuildNilSlicesMarshalAsEmptyArrays(t *testing.T) {
 	require.NotContains(t, s, "\"connectors\": null")
 }
 
+func TestBuildNormalisesNilNamespaces(t *testing.T) {
+	b, err := Build(Meta{Version: "v"}, nil, nil).JSON()
+	require.NoError(t, err)
+	require.Contains(t, string(b), `"namespaces": []`)
+	require.NotContains(t, string(b), `"namespaces": null`)
+}
+
 func TestJSONRoundTrips(t *testing.T) {
 	r := Build(Meta{Version: "1", GeneratedAt: time.Now()},
 		[]connector.Status{{Name: "k8s", Availability: connector.Availability{State: connector.StateAvailable}}},

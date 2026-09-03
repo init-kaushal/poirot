@@ -11,12 +11,36 @@ import (
 )
 
 // TestBuildOutputIsByteStable guards the whole report pipeline (Build -> JSON /
-// Markdown) against run-to-run ordering nondeterminism. The findings below
-// include one whose evidence value is a map[string]any{"reasons": []string{...}}
-// with several elements and a Summary that mentions them; if any stage ranged a
-// map without sorting, repeated renders would diverge.
+// Markdown) against run-to-run ordering nondeterminism. At least one finding's
+// Evidence[0].Value is a map[string]any assembled by *ranging a Go map* (whose
+// iteration order Go deliberately randomises) with >=4 keys; the findings also
+// span 2 domains and 2+ severities. Build + JSON + Markdown are rendered 50x and
+// every result must equal the first.
+//
+// What actually makes this pass: encoding/json marshals map keys in sorted
+// order, so a map reaching the report renders stably regardless of how it was
+// built. The *upstream* producers that flatten maps into finding-bound slices
+// (metrics.Collect sorting every result's Samples; the change analyzer sorting
+// owned ReplicaSets) are where real determinism is enforced — this test only
+// catches a regression that reintroduces map-iteration order into report
+// rendering itself.
 func TestBuildOutputIsByteStable(t *testing.T) {
 	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	// Built by ranging a Go map with >4 keys — iteration order is randomised
+	// per run, so a non-sorting render path would diverge across the 50 loops.
+	labelSet := map[string]string{
+		"namespace": "prod",
+		"pod":       "api-0",
+		"container": "api",
+		"node":      "node-3",
+		"reason":    "BackOff",
+	}
+	eventEvidence := map[string]any{"eventCount": 9}
+	for k, v := range labelSet {
+		eventEvidence[k] = v
+	}
+	eventEvidence["reasons"] = []string{"BackOff", "FailedMount", "FailedScheduling", "Unhealthy"}
 
 	findings := []analyzer.Finding{
 		{
@@ -29,11 +53,8 @@ func TestBuildOutputIsByteStable(t *testing.T) {
 			Evidence: []analyzer.Evidence{{
 				Source: "k8s",
 				Query:  "events[type=Warning] grouped by involvedObject",
-				Value: map[string]any{
-					"eventCount": 9,
-					"reasons":    []string{"BackOff", "FailedMount", "FailedScheduling", "Unhealthy"},
-				},
-				At: at,
+				Value:  eventEvidence,
+				At:     at,
 			}},
 		},
 		{

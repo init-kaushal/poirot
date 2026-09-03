@@ -53,18 +53,21 @@ var mdTmpl = template.Must(template.New("report").Funcs(mdFuncs).Parse(`# poirot
 {{- end}}
 
 ## Findings
-{{if not .HasContent}}
+{{if not .HasContent}}{{if .Skipped}}
+No findings from the checks that ran.
+{{else}}
 No findings. ✅
-{{else}}{{range .Domains}}
+{{end}}{{else}}{{range .Domains}}
 ### {{.Name}}
 {{range .Findings}}
 #### [{{sevTag .Severity}}] {{.Title}} — {{.Object.String}}
 
 {{.Summary}}
-
+{{if .Evidence}}
 Evidence:
 {{- range .Evidence}}
 - {{evline .}}
+{{- end}}
 {{- end}}
 {{if .Analysis}}
 Probable cause: {{.Analysis.ProbableCause}}
@@ -90,7 +93,7 @@ func (r Report) Markdown() ([]byte, error) {
 		if s.Availability.Detail != "" {
 			parts = append(parts, s.Availability.Detail)
 		}
-		detail := strings.Join(parts, " — ")
+		detail := strings.ReplaceAll(strings.Join(parts, " — "), "|", `\|`)
 		if detail == "" {
 			detail = "-"
 		}
