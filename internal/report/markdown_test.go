@@ -40,6 +40,38 @@ func TestMarkdownGolden(t *testing.T) {
 	require.Equal(t, string(want), string(got))
 }
 
+func TestMarkdownEmptyEvidenceNoDanglingHeader(t *testing.T) {
+	r := Build(Meta{Version: "v", Context: "c", Lookback: "24h"}, nil, []analyzer.Finding{{
+		RuleID: "x/y", Domain: "x", Severity: analyzer.SeverityWarning, Title: "T",
+		Object: analyzer.ObjectRef{Kind: "Pod", Name: "p"}, Summary: "s", // no Evidence
+	}})
+	md, err := r.Markdown()
+	require.NoError(t, err)
+	require.NotContains(t, string(md), "Evidence:\n\n") // no header with nothing under it
+	require.NotContains(t, string(md), "Evidence:")     // finding has none at all
+}
+
+func TestMarkdownAllSkippedIsNotACleanBill(t *testing.T) {
+	r := Build(Meta{Version: "v", Context: "c", Lookback: "24h"}, nil, []analyzer.Finding{{
+		RuleID: "slo/skipped", Domain: "slo", Severity: analyzer.SeverityInfo,
+		Title: "Analyzer skipped", Summary: "slo analysis skipped — missing connector(s): promql",
+	}})
+	md, err := r.Markdown()
+	require.NoError(t, err)
+	require.NotContains(t, string(md), "No findings. ✅")
+	require.Contains(t, string(md), "No findings from the checks that ran.")
+	require.Contains(t, string(md), "slo analysis skipped")
+}
+
+func TestMarkdownEscapesPipeInConnectorDetail(t *testing.T) {
+	r := Build(Meta{Version: "v", Context: "c", Lookback: "24h"},
+		[]connector.Status{{Name: "promql", Availability: connector.Availability{
+			State: connector.StateDegraded, Reason: "unreachable", Detail: "dial a|b failed"}}}, nil)
+	md, err := r.Markdown()
+	require.NoError(t, err)
+	require.Contains(t, string(md), `dial a\|b failed`)
+}
+
 func TestMarkdownNoFindings(t *testing.T) {
 	r := Build(Meta{Version: "1.0.0", Context: "dev", Lookback: "24h"}, nil, nil)
 	got, err := r.Markdown()

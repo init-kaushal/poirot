@@ -94,6 +94,11 @@ func (c *Connector) Name() string { return "k8s" }
 // ContextName returns the resolved kubeconfig context name.
 func (c *Connector) ContextName() string { return c.ctxName }
 
+// Clientset returns the underlying Kubernetes client, for connectors that
+// reach in-cluster services through the API server (e.g. promql via the
+// service proxy). Read-only use only.
+func (c *Connector) Clientset() kubernetes.Interface { return c.cs }
+
 // Probe reports whether the Kubernetes API server is reachable.
 func (c *Connector) Probe(ctx context.Context) connector.Availability {
 	if _, err := c.cs.Discovery().ServerVersion(); err != nil {

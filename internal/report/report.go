@@ -45,6 +45,9 @@ func Build(meta Meta, statuses []connector.Status, findings []analyzer.Finding) 
 	if meta.Tool == "" {
 		meta.Tool = "poirot"
 	}
+	if meta.Namespaces == nil {
+		meta.Namespaces = []string{}
+	}
 
 	conns := make([]connector.Status, len(statuses))
 	copy(conns, statuses)

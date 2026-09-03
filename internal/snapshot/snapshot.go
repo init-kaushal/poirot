@@ -32,4 +32,41 @@ type Snapshot struct {
 	HPAs         []autoscalingv2.HorizontalPodAutoscaler
 	PVCs         []corev1.PersistentVolumeClaim
 	Services     []corev1.Service
+	Metrics      *MetricSet
+}
+
+// MetricSample is one time series' current value with its label set.
+type MetricSample struct {
+	Labels map[string]string `json:"labels"`
+	Value  float64           `json:"value"`
+}
+
+// MetricResult is the outcome of one query-pack entry. Error is set (and
+// Samples empty) when that single query failed; a failed entry never aborts
+// the collect.
+type MetricResult struct {
+	Name    string         `json:"name"`
+	Expr    string         `json:"expr"`
+	Samples []MetricSample `json:"samples"`
+	Error   string         `json:"error,omitempty"`
+}
+
+// MetricSet is the fixed query pack's results, collected once per run.
+type MetricSet struct {
+	Backend     string         `json:"backend"`
+	CollectedAt time.Time      `json:"collectedAt"`
+	Results     []MetricResult `json:"results"`
+}
+
+// Result returns the pack entry by name, or nil. Safe on a nil receiver.
+func (m *MetricSet) Result(name string) *MetricResult {
+	if m == nil {
+		return nil
+	}
+	for i := range m.Results {
+		if m.Results[i].Name == name {
+			return &m.Results[i]
+		}
+	}
+	return nil
 }

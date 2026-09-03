@@ -34,9 +34,15 @@ output:
   # none | warning | critical
   failOn: critical
 
-# --- Observability backends (later milestones; parsed but unused in M1) ---
-# connectors:
-#   promql:       { url: auto }                        # Prometheus / VictoriaMetrics / Thanos / Mimir  (M2)
-#   opencost:     { url: auto, estimateFallback: true } # cost / rightsizing                            (M4)
-#   alertmanager: { url: auto }                        # firing-alert correlation                       (M5)
-#   gitops:       { mode: auto }                       # auto | argocd | flux | disabled               (M5)
+connectors:
+  # Metrics backend for the slo analyzer (M2). One of:
+  #   auto      — discover a Prometheus/VictoriaMetrics/Thanos/Mimir Service and
+  #               reach it through the Kubernetes API-server proxy (needs RBAC:
+  #               get on services/proxy in the backend's namespace)
+  #   http://…  — an explicit URL you can already reach (e.g. a kubectl port-forward)
+  #   disabled  — skip metrics entirely; slo analyzer reports as skipped
+  promql: { url: auto }
+  # opencost / alertmanager / gitops arrive in later milestones (parsed, unused now).
+  # opencost:     { url: auto, estimateFallback: true }
+  # alertmanager: { url: auto }
+  # gitops:       { mode: auto }

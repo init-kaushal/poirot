@@ -10,17 +10,31 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/init-kaushal/poirot/internal/config"
 	"github.com/init-kaushal/poirot/internal/connector"
 	"github.com/init-kaushal/poirot/internal/connector/k8s"
+	"github.com/init-kaushal/poirot/internal/metrics"
 	"github.com/init-kaushal/poirot/internal/snapshot"
 )
 
 func testConfig() *config.Config {
 	c := config.Default()
 	c.LLM.Provider = "none"
+	// Keep M1-era tests hermetic: don't let the orchestrator build and probe a
+	// real promql connector. Tests that exercise the metrics/slo path opt back
+	// in with their own URL and an injected fake (see promqlConfig).
+	c.Connectors.PromQL.URL = "disabled"
+	return c
+}
+
+// promqlConfig is testConfig with promql registration re-enabled, so an injected
+// fake promql connector (opts.Promql) is registered and probed.
+func promqlConfig() *config.Config {
+	c := testConfig()
+	c.Connectors.PromQL.URL = "auto"
 	return c
 }
 
@@ -82,3 +96,72 @@ func (unreachableK8s) Collect(context.Context) (*snapshot.Snapshot, error) {
 }
 
 func (unreachableK8s) ContextName() string { return "" }
+
+func (unreachableK8s) Clientset() kubernetes.Interface { return fake.NewSimpleClientset() }
+
+// fakePromql is a hermetic promql connector stub for orchestrator tests.
+type fakePromql struct {
+	state   connector.State
+	samples map[string][]snapshot.MetricSample // keyed by pack entry Expr
+}
+
+func (fakePromql) Name() string { return "promql" }
+
+func (f fakePromql) Probe(context.Context) connector.Availability {
+	return connector.Availability{State: f.state}
+}
+
+func (fakePromql) Capabilities() []connector.Capability { return nil }
+
+func (f fakePromql) Query(_ context.Context, _ string, args json.RawMessage) (json.RawMessage, error) {
+	var a struct {
+		Expr string `json:"expr"`
+	}
+	_ = json.Unmarshal(args, &a)
+	return json.Marshal(f.samples[a.Expr])
+}
+
+func (fakePromql) Backend() string { return "fake" }
+
+func TestRunCollectsMetricsAndRunsSLO(t *testing.T) {
+	cs := fake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "p"}},
+	)
+	src := k8s.NewWithClient(cs, "ctx", k8s.Scope{Lookback: time.Hour})
+
+	pack := metrics.DefaultPack()
+	fp := fakePromql{state: connector.StateAvailable, samples: map[string][]snapshot.MetricSample{
+		pack[1].Expr: {{Labels: map[string]string{"namespace": "p", "pod": "x", "container": "c"}, Value: 0.99}},
+	}}
+
+	res, err := Run(context.Background(), Options{Config: promqlConfig(), Version: "t", K8s: src, Promql: fp})
+	require.NoError(t, err)
+
+	var found bool
+	for _, f := range res.Report.Findings {
+		if f.RuleID == "slo/mem-saturation" {
+			found = true
+		}
+	}
+	require.True(t, found)
+	require.GreaterOrEqual(t, res.Report.Meta.Counts.Critical, 1) // mem 0.99 => critical
+}
+
+func TestRunSkipsSLOWhenPromqlAbsent(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	src := k8s.NewWithClient(cs, "ctx", k8s.Scope{Lookback: time.Hour})
+	fp := fakePromql{state: connector.StateAbsent}
+
+	// promql is registered (URL != "disabled") but probes absent, so slo must
+	// report as skipped via reg.Satisfied(["promql"]) == false.
+	res, err := Run(context.Background(), Options{Config: promqlConfig(), Version: "t", K8s: src, Promql: fp})
+	require.NoError(t, err)
+
+	var skipped bool
+	for _, f := range res.Report.Findings {
+		if f.RuleID == "slo/skipped" {
+			skipped = true
+		}
+	}
+	require.True(t, skipped)
+}

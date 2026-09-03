@@ -105,3 +105,21 @@ spec:
             limits: { cpu: 50m, memory: 32Mi }
           readinessProbe:
             httpGet: { path: /, port: 80 }
+---
+# CPU saturation — busy-loops against a 50m limit → slo/cpu-saturation
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: cpuhog, namespace: poirot-demo }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: cpuhog } }
+  template:
+    metadata: { labels: { app: cpuhog } }
+    spec:
+      containers:
+        - name: hog
+          image: busybox:1.36
+          command: ["sh", "-c", "while true; do :; done"]
+          resources:
+            requests: { cpu: 25m, memory: 16Mi }
+            limits:   { cpu: 50m, memory: 32Mi }

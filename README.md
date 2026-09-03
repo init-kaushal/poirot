@@ -24,4 +24,8 @@ sleep 60
 kubectl delete namespace poirot-demo     # teardown
 ```
 
-Status: M1 — reliability report only, no LLM.
+Status: M2 — reliability + slo (metrics golden signals, scrape health) + change (rollout risk). No LLM.
+
+The `slo` analyzer needs a PromQL-compatible backend (Prometheus, VictoriaMetrics,
+Thanos, Mimir). Set `connectors.promql.url` to `auto` (discovered + reached via the
+API-server proxy), an explicit URL, or `disabled`.
