@@ -1,0 +1,4 @@
+{"status":"success","data":{"resultType":"vector","result":[
+  {"metric":{"namespace":"payments","pod":"api-1","container":"api"},"value":[1735732800,"0.94"]},
+  {"metric":{"namespace":"payments","pod":"api-2","container":"api"},"value":[1735732800,"0.31"]}
+]}}
