@@ -9,10 +9,14 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/init-kaushal/poirot/internal/analyzer"
+	"github.com/init-kaushal/poirot/internal/analyzer/change"
 	"github.com/init-kaushal/poirot/internal/analyzer/reliability"
+	"github.com/init-kaushal/poirot/internal/analyzer/slo"
 	"github.com/init-kaushal/poirot/internal/config"
 	"github.com/init-kaushal/poirot/internal/connector"
 	"github.com/init-kaushal/poirot/internal/connector/k8s"
+	"github.com/init-kaushal/poirot/internal/connector/promql"
+	"github.com/init-kaushal/poirot/internal/metrics"
 	"github.com/init-kaushal/poirot/internal/report"
 	"github.com/init-kaushal/poirot/internal/snapshot"
 )
@@ -30,7 +34,8 @@ type K8sSource interface {
 type Options struct {
 	Config  *config.Config
 	Version string
-	K8s     K8sSource // nil => built from Config.Cluster + Config.Scope
+	K8s     K8sSource           // nil => built from Config.Cluster + Config.Scope
+	Promql  connector.Connector // nil => built from Config.Connectors.PromQL
 }
 
 // Result is the product of a Run: the canonical report and the process exit code.
@@ -64,6 +69,21 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	// 1. Discover
 	reg := connector.NewRegistry()
 	reg.Register(src)
+	if cfg.Connectors.PromQL.URL != "disabled" {
+		pc := opts.Promql
+		if pc == nil {
+			url := cfg.Connectors.PromQL.URL
+			if url == "" {
+				url = "auto"
+			}
+			pc = promql.New(promql.Options{
+				URL:        url,
+				Clientset:  src.Clientset(),
+				Namespaces: cfg.Scope.Namespaces,
+			})
+		}
+		reg.Register(pc)
+	}
 	statuses := reg.Probe(ctx)
 	for _, s := range statuses {
 		if s.Name == "k8s" && s.Availability.State != connector.StateAvailable {
@@ -76,9 +96,16 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("collect: %w", err)
 	}
+	if pc, ok := reg.Get("promql"); ok && reg.Satisfied([]string{"promql"}) {
+		backend := "prometheus"
+		if b, ok := pc.(interface{ Backend() string }); ok && b.Backend() != "" {
+			backend = b.Backend()
+		}
+		snap.Metrics = metrics.Collect(ctx, pc, metrics.DefaultPack(), snap.Meta.CollectedAt, backend)
+	}
 
 	// 3. Analyze
-	analyzers := []analyzer.Analyzer{reliability.New()}
+	analyzers := []analyzer.Analyzer{reliability.New(), change.New(), slo.New()}
 	var findings []analyzer.Finding
 	for _, a := range analyzers {
 		if !reg.Satisfied(a.Requires()) {
