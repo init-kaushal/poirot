@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/client-go/kubernetes"
+
 	"github.com/init-kaushal/poirot/internal/analyzer"
 	"github.com/init-kaushal/poirot/internal/analyzer/reliability"
 	"github.com/init-kaushal/poirot/internal/config"
@@ -21,6 +23,7 @@ type K8sSource interface {
 	connector.Connector
 	Collect(ctx context.Context) (*snapshot.Snapshot, error)
 	ContextName() string
+	Clientset() kubernetes.Interface
 }
 
 // Options configures a single Run.

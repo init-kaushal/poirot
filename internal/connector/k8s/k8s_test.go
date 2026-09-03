@@ -26,3 +26,9 @@ func TestQueryUnsupportedInM1(t *testing.T) {
 	_, err := c.Query(context.Background(), "anything", nil)
 	require.ErrorContains(t, err, "no queryable capabilities")
 }
+
+func TestClientsetGetterReturnsInjected(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	c := NewWithClient(cs, "ctx", Scope{})
+	require.Same(t, cs, c.Clientset())
+}
