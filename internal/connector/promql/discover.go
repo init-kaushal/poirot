@@ -27,16 +27,33 @@ var candidateNames = map[string]bool{
 	"mimir": true, "mimir-query-frontend": true, "mimir-nginx": true,
 }
 
+// candidatePrefixes only holds prefixes with no redundant candidateNames entry.
+// thanos-query / mimir-query were dropped: they duplicate exact names and only
+// add prefix-shadow risk.
 var candidatePrefixes = []string{
-	"prometheus-", "thanos-query", "vmselect-", "vmsingle-", "mimir-query",
+	"prometheus-", "vmselect-", "vmsingle-",
+}
+
+// denyComponents are non-query components of Prometheus-family charts that share
+// a candidate prefix (notably "prometheus-alertmanager"). Checked in the prefix
+// pass only.
+var denyComponents = []string{
+	"alertmanager", "node-exporter", "kube-state-metrics",
+	"pushgateway", "operator", "blackbox", "grafana",
 }
 
 var knownPorts = map[int32]bool{9090: true, 8080: true, 8429: true, 8481: true, 10902: true, 9091: true}
 
-func nameMatches(n string) bool {
+func exactMatch(n string) bool {
+	return candidateNames[strings.ToLower(n)]
+}
+
+func prefixMatch(n string) bool {
 	n = strings.ToLower(n)
-	if candidateNames[n] {
-		return true
+	for _, d := range denyComponents {
+		if strings.Contains(n, d) {
+			return false
+		}
 	}
 	for _, p := range candidatePrefixes {
 		if strings.HasPrefix(n, p) {
@@ -88,19 +105,24 @@ func Discover(ctx context.Context, cs kubernetes.Interface, namespaces []string)
 		}
 		sort.Strings(nss)
 	}
-	for _, ns := range nss {
-		svcs, err := cs.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return nil, err
-		}
-		items := append([]corev1.Service(nil), svcs.Items...)
-		sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
-		for _, s := range items {
-			if !nameMatches(s.Name) {
-				continue
+	// Pass 1 takes any exact candidateNames hit anywhere before pass 2 falls back
+	// to prefix matching, so "prometheus-server" always wins over a same-namespace
+	// "prometheus-alertmanager" that only matches the "prometheus-" prefix.
+	for _, match := range []func(string) bool{exactMatch, prefixMatch} {
+		for _, ns := range nss {
+			svcs, err := cs.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return nil, err
 			}
-			if port, scheme, ok := pickPort(s.Spec.Ports); ok {
-				return &Target{Namespace: s.Namespace, Name: s.Name, Port: port, Scheme: scheme}, nil
+			items := append([]corev1.Service(nil), svcs.Items...)
+			sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+			for _, s := range items {
+				if !match(s.Name) {
+					continue
+				}
+				if port, scheme, ok := pickPort(s.Spec.Ports); ok {
+					return &Target{Namespace: s.Namespace, Name: s.Name, Port: port, Scheme: scheme}, nil
+				}
 			}
 		}
 	}

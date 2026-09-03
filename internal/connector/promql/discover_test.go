@@ -42,6 +42,29 @@ func TestDiscoverPicksNumericPortWhenUnnamed(t *testing.T) {
 	require.Equal(t, "8429", tgt.Port)
 }
 
+func TestDiscoverPrefersExactMatchOverPrefix(t *testing.T) {
+	cs := fake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "monitoring"}},
+		svc("monitoring", "prometheus-alertmanager", corev1.ServicePort{Name: "http", Port: 9093}),
+		svc("monitoring", "prometheus-server", corev1.ServicePort{Name: "http", Port: 9090}),
+	)
+	tgt, err := Discover(context.Background(), cs, nil)
+	require.NoError(t, err)
+	require.NotNil(t, tgt)
+	require.Equal(t, "prometheus-server", tgt.Name)
+}
+
+func TestDiscoverDenylistSkipsAlertmanager(t *testing.T) {
+	cs := fake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "monitoring"}},
+		svc("monitoring", "prometheus-alertmanager", corev1.ServicePort{Name: "http", Port: 9093}),
+		svc("monitoring", "grafana", corev1.ServicePort{Name: "http", Port: 80}),
+	)
+	tgt, err := Discover(context.Background(), cs, nil)
+	require.NoError(t, err)
+	require.Nil(t, tgt)
+}
+
 func TestDiscoverNoMatchIsNotAnError(t *testing.T) {
 	cs := fake.NewSimpleClientset(
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}},

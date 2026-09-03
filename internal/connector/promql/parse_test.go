@@ -36,6 +36,14 @@ func TestParseInstantError(t *testing.T) {
 	require.Equal(t, "bad_data", ae.Type)
 }
 
+func TestParseInstantSkipsNonFinite(t *testing.T) {
+	s, err := parseInstant(read(t, "nonfinite.json"))
+	require.NoError(t, err)
+	require.Len(t, s, 1)
+	require.Equal(t, "c", s[0].Labels["namespace"])
+	require.InDelta(t, 0.42, s[0].Value, 1e-9)
+}
+
 func TestParseRangeUsesLastPoint(t *testing.T) {
 	s, err := parseRange(read(t, "matrix_ok.json"))
 	require.NoError(t, err)

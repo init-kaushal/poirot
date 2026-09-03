@@ -21,7 +21,7 @@ func DefaultPack() []Entry {
 		},
 		{
 			Name: "mem_saturation", Kind: KindInstant,
-			Expr: `max by (namespace, pod, container) (container_memory_working_set_bytes{container!="",container!="POD"} / container_spec_memory_limit_bytes{container!="",container!="POD"} > 0)`,
+			Expr: `max by (namespace, pod, container) (container_memory_working_set_bytes{container!="",container!="POD"} / (container_spec_memory_limit_bytes{container!="",container!="POD"} > 0))`,
 		},
 		{
 			Name: "restart_rate", Kind: KindInstant,

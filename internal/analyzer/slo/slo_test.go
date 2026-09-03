@@ -56,6 +56,36 @@ func TestTargetsDown(t *testing.T) {
 	require.Equal(t, "slo/target-down", fs[0].RuleID)
 }
 
+func TestPodNotReady(t *testing.T) {
+	m := mset(snapshot.MetricResult{
+		Name: "pod_not_ready", Expr: `max by (namespace, pod) (kube_pod_status_ready{condition="true"} == 0)`,
+		Samples: []snapshot.MetricSample{
+			{Labels: map[string]string{"namespace": "shop", "pod": "cart-7d9"}, Value: 0},
+		},
+	})
+	fs := checkPodNotReady(m)
+	require.Len(t, fs, 1)
+	require.Equal(t, "slo/not-ready", fs[0].RuleID)
+	require.Equal(t, analyzer.SeverityWarning, fs[0].Severity)
+	require.Equal(t, "Pod/shop/cart-7d9", fs[0].Object.String())
+	require.Equal(t, "promql", fs[0].Evidence[0].Source)
+}
+
+func TestRestartRate(t *testing.T) {
+	m := mset(snapshot.MetricResult{
+		Name: "restart_rate", Expr: "rate(...)",
+		Samples: []snapshot.MetricSample{
+			{Labels: map[string]string{"namespace": "p", "pod": "api-1"}, Value: 2.5},
+			{Labels: map[string]string{"namespace": "p", "pod": "api-2"}, Value: 0.4},
+		},
+	})
+	fs := checkRestartRate(m)
+	require.Len(t, fs, 1)
+	require.Equal(t, "slo/restart-rate", fs[0].RuleID)
+	require.Equal(t, analyzer.SeverityWarning, fs[0].Severity)
+	require.Equal(t, "Pod/p/api-1", fs[0].Object.String())
+}
+
 func TestQueryErrorProducesInfoFinding(t *testing.T) {
 	m := mset(snapshot.MetricResult{Name: "targets_down", Expr: "up == 0", Error: "boom"})
 	fs := checkQueryErrors(m)

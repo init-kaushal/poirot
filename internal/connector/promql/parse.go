@@ -3,6 +3,7 @@ package promql
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 
 	"github.com/init-kaushal/poirot/internal/snapshot"
@@ -77,6 +78,12 @@ func parseInstant(raw []byte) ([]snapshot.MetricSample, error) {
 		if err != nil {
 			return nil, err
 		}
+		// A single non-finite series (+Inf/-Inf/NaN — e.g. a divide-by-zero in
+		// the expr) would fail json.Marshal of the whole []MetricSample. Skip it
+		// silently so the rest of the query result survives.
+		if math.IsInf(v, 0) || math.IsNaN(v) {
+			continue
+		}
 		out = append(out, snapshot.MetricSample{Labels: r.Metric, Value: v})
 	}
 	return out, nil
@@ -98,6 +105,9 @@ func parseRange(raw []byte) ([]snapshot.MetricSample, error) {
 		v, err := sampleValue(r.Values[len(r.Values)-1])
 		if err != nil {
 			return nil, err
+		}
+		if math.IsInf(v, 0) || math.IsNaN(v) {
+			continue
 		}
 		out = append(out, snapshot.MetricSample{Labels: r.Metric, Value: v})
 	}

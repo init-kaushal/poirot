@@ -98,9 +98,9 @@ func checkPodNotReady(m *snapshot.MetricSet) []analyzer.Finding {
 	}
 	var out []analyzer.Finding
 	for _, s := range r.Samples {
-		if s.Value < 1 {
-			continue
-		}
+		// pod_not_ready is `kube_pod_status_ready{condition="true"} == 0`, an
+		// unbounded comparison filter: every returned sample is a not-ready pod
+		// carrying its original value (0). Fire on presence, like checkTargetsDown.
 		obj := podRef(s.Labels)
 		out = append(out, finding("slo/not-ready", analyzer.SeverityWarning, obj,
 			"Pod not Ready (sustained, from metrics)",

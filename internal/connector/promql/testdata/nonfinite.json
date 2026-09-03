@@ -1,0 +1,5 @@
+{"status":"success","data":{"resultType":"vector","result":[
+  {"metric":{"namespace":"a","pod":"p-1"},"value":[1735732800,"+Inf"]},
+  {"metric":{"namespace":"b","pod":"p-2"},"value":[1735732800,"NaN"]},
+  {"metric":{"namespace":"c","pod":"p-3"},"value":[1735732800,"0.42"]}
+]}}
