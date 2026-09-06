@@ -84,6 +84,28 @@ func TestInvestigateBadJSONTwiceStubs(t *testing.T) {
 	require.NotEmpty(t, meta.Warnings)
 }
 
+func TestInvestigateHardIterationCeiling(t *testing.T) {
+	f := warn(analyzer.Finding{RuleID: "x/y", Object: analyzer.ObjectRef{Kind: "Pod", Name: "p"}})
+	// Every Complete returns a tool_use with zero Usage, so Budget.Exceeded()
+	// never trips (tokens stay 0, MaxToolCalls is 0). The hard ceiling must break
+	// the loop. Provide plenty of scripted turns; the forced final Complete after
+	// the ceiling fires falls through to the fakeLLM's default end_turn{}.
+	toolResp := llm.Response{StopReason: "tool_use", Usage: llm.Usage{},
+		Blocks: []llm.Block{{Type: "tool_use", ToolName: "snapshot.events", ToolID: "t", Input: json.RawMessage(`{"kind":"Pod","name":"p"}`)}}}
+	resps := make([]llm.Response, 25)
+	for i := range resps {
+		resps[i] = toolResp
+	}
+	l := &fakeLLM{responses: resps}
+	tp := NewInProcessToolProvider(regWithK8s(t), &snapshot.Snapshot{}, []analyzer.Finding{f})
+
+	out, meta := Investigate(context.Background(), l, tp, []analyzer.Finding{f},
+		InvestigateConfig{MaxGroups: 10, Budget: Budget{MaxToolCalls: 0, MaxTokens: 0}, MaxTokensPerCall: 4096})
+
+	require.NotNil(t, out[0].Analysis, "group still gets an Analysis after the ceiling fires")
+	require.Contains(t, meta.Warnings, "investigate Pod/p: hit hard iteration ceiling (20)")
+}
+
 func TestInvestigateSkipsInfoAndCapsGroups(t *testing.T) {
 	info := analyzer.Finding{RuleID: "slo/skipped", Severity: analyzer.SeverityInfo,
 		Object: analyzer.ObjectRef{Kind: "X", Name: "y"}}

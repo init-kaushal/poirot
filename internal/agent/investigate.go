@@ -167,9 +167,24 @@ func investigateGroup(ctx context.Context, l llm.LLM, tp ToolProvider, cfg Inves
 	var answer *investigateAnswer
 	var parseErr error
 
+	// Hard iteration backstop: every other exit depends on external cooperation
+	// (Usage accruing, a tool call landing, a non-tool_use stop, an error). A
+	// misbehaving provider — StopReason "tool_use" with no tool_use blocks and no
+	// Usage — or a Budget{0,0} "no limit" config would otherwise spin forever.
+	maxIters := 2*b.MaxToolCalls + 6
+	if b.MaxToolCalls <= 0 {
+		maxIters = 20 // fixed backstop when tool calls are uncapped
+	}
+	iter := 0
+
 loop:
 	for {
-		if exceeded, _ := b.Exceeded(); exceeded {
+		iter++
+		exceeded, _ := b.Exceeded()
+		if exceeded || iter >= maxIters {
+			if !exceeded {
+				meta.Warnings = append(meta.Warnings, fmt.Sprintf("investigate %s: hit hard iteration ceiling (%d)", obj, maxIters))
+			}
 			resp, cerr := completeNoTools("Budget reached. Reply now with the JSON object, best effort.")
 			if cerr != nil {
 				meta.Warnings = append(meta.Warnings, fmt.Sprintf("investigate %s: forced final answer: %v", obj, cerr))
