@@ -1,0 +1,32 @@
+{
+  "id": "chatcmpl-9xTm7ToolCallDef67890",
+  "object": "chat.completion",
+  "created": 1712345690,
+  "model": "gpt-4o-mini",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_kJ3nR8sd7QpZ01",
+            "type": "function",
+            "function": {
+              "name": "kubectl_get",
+              "arguments": "{\"resource\":\"pods\",\"namespace\":\"default\"}"
+            }
+          }
+        ]
+      },
+      "logprobs": null,
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 472,
+    "completion_tokens": 91,
+    "total_tokens": 563
+  }
+}
