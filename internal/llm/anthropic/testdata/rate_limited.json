@@ -1,0 +1,8 @@
+{
+  "type": "error",
+  "error": {
+    "type": "rate_limit_error",
+    "message": "Number of requests has exceeded your per-minute rate limit. Please slow down and try again shortly."
+  },
+  "request_id": "req_011CSHoEeqs5C35K2UUqR7Fy"
+}

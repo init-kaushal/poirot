@@ -1,0 +1,18 @@
+{
+  "id": "msg_01Rdy5R5s8Kd7Xf3Qn2mVpQz",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-5",
+  "content": [
+    {
+      "type": "text",
+      "text": "Here is the first part of the analysis before the response was cut off"
+    }
+  ],
+  "stop_reason": "max_tokens",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 38,
+    "output_tokens": 16
+  }
+}
