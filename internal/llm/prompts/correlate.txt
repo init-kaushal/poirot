@@ -1,0 +1,11 @@
+# v1
+You are given a list of findings from one cluster assessment, each already analysed.
+Identify which findings share a single root cause.
+
+Rules:
+- Only reference findings present in the input, by their "ruleId@object" key.
+- A finding correlates with another only if the same underlying event explains both.
+- Omit findings that stand alone.
+
+Reply with ONE json object and nothing else:
+{"correlations":[{"key":"<ruleId@object>","related":["<ruleId@object>", ...]}]}
