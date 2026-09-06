@@ -100,6 +100,26 @@ func Investigate(ctx context.Context, l llm.LLM, tp ToolProvider, findings []ana
 	})
 
 	for gi, g := range order {
+		if err := ctx.Err(); err != nil {
+			// Global-budget context is done: stub this group and every
+			// remaining one the same way the MaxGroups overflow does, emit ONE
+			// aggregated warning, and stop. A "none"-confidence "not
+			// investigated" stub is distinguishable from a real low-confidence
+			// "agent could not complete analysis" result.
+			n := 0
+			for _, gg := range order[gi:] {
+				for _, idx := range gg.idxs {
+					out[idx].Analysis = &analyzer.Analysis{
+						ProbableCause: "not investigated — budget",
+						Confidence:    "none",
+					}
+				}
+				n++
+			}
+			meta.Warnings = append(meta.Warnings, fmt.Sprintf(
+				"investigate: global budget exhausted, %d group(s) not investigated", n))
+			break
+		}
 		if gi >= cfg.MaxGroups {
 			for _, idx := range g.idxs {
 				out[idx].Analysis = &analyzer.Analysis{
@@ -142,9 +162,18 @@ func investigateGroup(ctx context.Context, l llm.LLM, tp ToolProvider, cfg Inves
 			Evidence: f.Evidence,
 		})
 	}
-	payload, _ := json.Marshal(struct {
+	payload, err := json.Marshal(struct {
 		Findings []promptFindingView `json:"findings"`
 	}{views})
+	if err != nil {
+		// Unreachable today (Evidence.Value is filtered of non-finite floats at
+		// the promql parse boundary); guarded because the M2 silent-drop defect
+		// had this exact shape — a discarded Marshal error handing the model an
+		// empty prompt.
+		meta.Warnings = append(meta.Warnings, fmt.Sprintf("investigate %s: build prompt payload: %v", obj, err))
+		stubGroup(out, idxs, "agent response could not be parsed", "low")
+		return
+	}
 
 	messages := []llm.Message{{
 		Role: llm.RoleUser,
@@ -210,6 +239,27 @@ loop:
 			var toolResults []llm.Block
 			for _, blk := range resp.Blocks {
 				if blk.Type != "tool_use" {
+					continue
+				}
+				// Enforce the tool-call budget within the turn: a model can emit
+				// N parallel tool_use blocks per turn, so checking b.Exceeded()
+				// only once per iteration (at the top of the loop) let it run up
+				// to maxIters*N reads. Past the cap we still emit a tool_result
+				// for every tool_use block (the Messages/chat APIs reject a turn
+				// with an unanswered tool_use) but do NOT invoke the tool. We do
+				// not b.ToolCall()/meta.ToolCalls++ here: the budget is already
+				// exhausted so the counter value is immaterial, and leaving
+				// meta.ToolCalls as the count of reads actually performed keeps
+				// it an honest "work done" metric. The top-of-loop Exceeded()
+				// check then routes to the forced-final-answer path next
+				// iteration.
+				if over, _ := b.Exceeded(); over {
+					toolResults = append(toolResults, llm.Block{
+						Type:    "tool_result",
+						ToolID:  blk.ToolID,
+						Content: "tool call budget exhausted for this object",
+						IsError: true,
+					})
 					continue
 				}
 				res, isErr, ierr := tp.Invoke(ctx, blk.ToolName, blk.Input)

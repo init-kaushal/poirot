@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/init-kaushal/poirot/internal/llm"
@@ -145,9 +146,9 @@ func (c *Client) do(ctx context.Context, url string, payload []byte) (llm.Respon
 
 	switch {
 	case httpResp.StatusCode == http.StatusTooManyRequests, httpResp.StatusCode >= 500:
-		return llm.Response{}, true, fmt.Errorf("anthropic: http %d: %s", httpResp.StatusCode, snippet(body))
+		return llm.Response{}, true, fmt.Errorf("anthropic: http %d: %s", httpResp.StatusCode, c.snippet(body))
 	case httpResp.StatusCode < 200 || httpResp.StatusCode >= 300:
-		return llm.Response{}, false, fmt.Errorf("anthropic: http %d: %s", httpResp.StatusCode, snippet(body))
+		return llm.Response{}, false, fmt.Errorf("anthropic: http %d: %s", httpResp.StatusCode, c.snippet(body))
 	}
 
 	var parsed apiResponse
@@ -186,11 +187,19 @@ func (c *Client) do(ctx context.Context, url string, payload []byte) (llm.Respon
 	return out, false, nil
 }
 
-func snippet(b []byte) string {
-	if len(b) > bodySnippetMax {
-		return string(b[:bodySnippetMax])
+// snippet returns up to bodySnippetMax bytes of an error body for surfacing in
+// an error string, with the API key scrubbed: an openai-compatible proxy or
+// misconfigured gateway can reflect request headers (including the key) in a
+// debug/error payload, and this error flows into report.json via Meta.Warnings.
+func (c *Client) snippet(b []byte) string {
+	s := string(b)
+	if len(s) > bodySnippetMax {
+		s = s[:bodySnippetMax]
 	}
-	return string(b)
+	if c.apiKey != "" {
+		s = strings.ReplaceAll(s, c.apiKey, "[REDACTED]")
+	}
+	return s
 }
 
 // --- wire types -------------------------------------------------------------

@@ -33,6 +33,11 @@ type InProcessToolProvider struct {
 	reg      *connector.Registry
 	snap     *snapshot.Snapshot
 	findings []analyzer.Finding
+	// allowed is the exact set of tool names Tools() advertises. Invoke rejects
+	// anything outside it before any connector dispatch, so the read-only
+	// guarantee rests on structure (the advertised capability set) rather than
+	// on every connector Query switch staying read-only by convention.
+	allowed map[string]bool
 }
 
 var _ ToolProvider = (*InProcessToolProvider)(nil)
@@ -40,7 +45,17 @@ var _ ToolProvider = (*InProcessToolProvider)(nil)
 // NewInProcessToolProvider builds the provider from the connector registry, the
 // collected snapshot, and the deterministic analyzer findings for this run.
 func NewInProcessToolProvider(reg *connector.Registry, snap *snapshot.Snapshot, findings []analyzer.Finding) *InProcessToolProvider {
-	return &InProcessToolProvider{reg: reg, snap: snap, findings: findings}
+	if snap == nil {
+		// A nil snapshot must not panic out of Invoke (and thus out of Run):
+		// the snapshot.* tools then correctly report "not found" instead.
+		snap = &snapshot.Snapshot{}
+	}
+	p := &InProcessToolProvider{reg: reg, snap: snap, findings: findings}
+	p.allowed = make(map[string]bool)
+	for _, t := range p.Tools() {
+		p.allowed[t.Name] = true
+	}
+	return p
 }
 
 // Tools lists the four snapshot.* tools in fixed order, then one ToolSpec per
@@ -68,6 +83,13 @@ func (p *InProcessToolProvider) Tools() []llm.ToolSpec {
 func (p *InProcessToolProvider) Invoke(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
+	}
+
+	// Allow-list gate: only names Tools() advertised are dispatchable. An
+	// unadvertised connector capability (e.g. a non-read verb someone adds to a
+	// Query switch without exposing it in Capabilities()) is unreachable here.
+	if !p.allowed[name] {
+		return json.RawMessage("unknown tool: " + name), true, nil
 	}
 
 	switch name {

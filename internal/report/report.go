@@ -35,7 +35,7 @@ type LLMMeta struct {
 	OutputTokens  int      `json:"outputTokens"`
 	ToolCalls     int      `json:"toolCalls"`
 	WallClockMs   int64    `json:"wallClockMs"`
-	Warnings      []string `json:"warnings"`
+	Warnings      []string `json:"warnings,omitempty"`
 }
 
 type Summary struct {

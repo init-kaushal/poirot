@@ -79,7 +79,11 @@ func Correlate(ctx context.Context, l llm.LLM, findings []analyzer.Finding, maxT
 		return out, []string{fmt.Sprintf("correlate: %v", err)}
 	}
 
-	payload, _ := json.Marshal(views)
+	payload, err := json.Marshal(views)
+	if err != nil {
+		// Unreachable today; guarded because the M2 defect had this exact shape.
+		return out, []string{fmt.Sprintf("correlate: build payload: %v", err)}
+	}
 	resp, err := l.Complete(ctx, llm.Request{
 		System:      system,
 		Messages:    []llm.Message{{Role: llm.RoleUser, Blocks: []llm.Block{{Type: "text", Text: string(payload)}}}},

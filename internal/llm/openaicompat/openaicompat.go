@@ -143,9 +143,9 @@ func (c *Client) do(ctx context.Context, url string, payload []byte) (llm.Respon
 
 	switch {
 	case httpResp.StatusCode == http.StatusTooManyRequests, httpResp.StatusCode >= 500:
-		return llm.Response{}, true, fmt.Errorf("openaicompat: http %d: %s", httpResp.StatusCode, snippet(body))
+		return llm.Response{}, true, fmt.Errorf("openaicompat: http %d: %s", httpResp.StatusCode, c.snippet(body))
 	case httpResp.StatusCode < 200 || httpResp.StatusCode >= 300:
-		return llm.Response{}, false, fmt.Errorf("openaicompat: http %d: %s", httpResp.StatusCode, snippet(body))
+		return llm.Response{}, false, fmt.Errorf("openaicompat: http %d: %s", httpResp.StatusCode, c.snippet(body))
 	}
 
 	var parsed chatResponse
@@ -175,6 +175,13 @@ func (c *Client) do(ctx context.Context, url string, payload []byte) (llm.Respon
 			Input:    json.RawMessage(tc.Function.Arguments),
 		})
 	}
+	// Some OpenAI-compatible servers report finish_reason "stop" on a turn that
+	// nonetheless carries tool_calls. The presence of tool_calls is
+	// authoritative: force tool_use so the investigate loop dispatches them
+	// rather than falling through to parseAnswer on empty text.
+	if len(choice.Message.ToolCalls) > 0 {
+		out.StopReason = "tool_use"
+	}
 	return out, false, nil
 }
 
@@ -193,11 +200,19 @@ func mapFinishReason(r string) string {
 	}
 }
 
-func snippet(b []byte) string {
-	if len(b) > bodySnippetMax {
-		return string(b[:bodySnippetMax])
+// snippet returns up to bodySnippetMax bytes of an error body for surfacing in
+// an error string, with the API key scrubbed: Ollama/vLLM/LiteLLM and corporate
+// proxies can reflect the Authorization header (the bearer key) in a debug or
+// error payload, and this error flows into report.json via Meta.Warnings.
+func (c *Client) snippet(b []byte) string {
+	s := string(b)
+	if len(s) > bodySnippetMax {
+		s = s[:bodySnippetMax]
 	}
-	return string(b)
+	if c.apiKey != "" {
+		s = strings.ReplaceAll(s, c.apiKey, "[REDACTED]")
+	}
+	return s
 }
 
 // --- wire types -----------------------------------------------------------

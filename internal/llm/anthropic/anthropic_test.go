@@ -96,6 +96,21 @@ func TestCompleteAuthErrorIsHard(t *testing.T) {
 	require.ErrorContains(t, err, "401")
 }
 
+// I4: a provider error body echoing the API key must be scrubbed before it
+// lands in the returned error (which flows into report.json via Meta.Warnings).
+func TestCompleteErrorBodyScrubsAPIKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error":"invalid x-api-key: sk-secret123"}`))
+	}))
+	defer srv.Close()
+	c, _ := New(Options{APIKey: "sk-secret123", Model: "m", BaseURL: srv.URL})
+	_, err := c.Complete(context.Background(), llm.Request{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "[REDACTED]")
+	require.NotContains(t, err.Error(), "sk-secret123")
+}
+
 func TestNewRejectsEmpty(t *testing.T) {
 	_, err := New(Options{Model: "m"})
 	require.Error(t, err)

@@ -158,6 +158,47 @@ func TestCompleteToolCallTurn(t *testing.T) {
 	require.JSONEq(t, `{"resource":"pods","namespace":"default"}`, string(tu.Input))
 }
 
+// I6: an OpenAI-compatible server that reports finish_reason "stop" while still
+// populating tool_calls must map to StopReason "tool_use" so the investigate
+// loop dispatches the tools instead of degrading the group to a stub.
+func TestCompleteStopFinishReasonWithToolCalls(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(fixture(t, "stop_with_tool_calls"))
+	}))
+	defer srv.Close()
+
+	c, _ := New(Options{APIKey: "k", Model: "m", BaseURL: srv.URL})
+	resp, err := c.Complete(context.Background(), llm.Request{})
+	require.NoError(t, err)
+	require.Equal(t, "tool_use", resp.StopReason, "tool_calls present overrides finish_reason:stop")
+
+	var tu *llm.Block
+	for i := range resp.Blocks {
+		if resp.Blocks[i].Type == "tool_use" {
+			tu = &resp.Blocks[i]
+		}
+	}
+	require.NotNil(t, tu)
+	require.Equal(t, "kubectl_get", tu.ToolName)
+	require.Equal(t, "call_stop_1", tu.ToolID)
+}
+
+// I4: an error body echoing the bearer key must be scrubbed before it lands in
+// the returned error (which flows into report.json via Meta.Warnings).
+func TestCompleteErrorBodyScrubsAPIKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error":"bad Authorization: Bearer sk-secret123"}`))
+	}))
+	defer srv.Close()
+
+	c, _ := New(Options{APIKey: "sk-secret123", Model: "m", BaseURL: srv.URL})
+	_, err := c.Complete(context.Background(), llm.Request{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "[REDACTED]")
+	require.NotContains(t, err.Error(), "sk-secret123")
+}
+
 func TestCompleteLengthStop(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write(fixture(t, "length_stop"))

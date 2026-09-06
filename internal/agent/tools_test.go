@@ -152,6 +152,64 @@ func TestInvokeConnectorQueryErrorBecomesIsErr(t *testing.T) {
 	require.Contains(t, string(res), "tool error")
 }
 
+// fatalConn is available and advertises exactly one capability; reaching its
+// Query is a test failure — the allow-list gate must reject any name the
+// connector did not advertise before dispatch.
+type fatalConn struct {
+	t    *testing.T
+	name string
+}
+
+func (f fatalConn) Name() string { return f.name }
+func (f fatalConn) Probe(context.Context) connector.Availability {
+	return connector.Availability{State: connector.StateAvailable}
+}
+func (f fatalConn) Capabilities() []connector.Capability {
+	return []connector.Capability{{ID: f.name + ".get", Description: "get",
+		ArgsSchema: json.RawMessage(`{"type":"object"}`)}}
+}
+func (f fatalConn) Query(_ context.Context, id string, _ json.RawMessage) (json.RawMessage, error) {
+	f.t.Fatalf("connector Query must not be reached for %q", id)
+	return nil, nil
+}
+
+// I3: a name that is not in the advertised Tools() set is rejected before any
+// connector dispatch, even when the connector prefix matches.
+func TestInvokeRejectsUnadvertisedCapability(t *testing.T) {
+	reg := connector.NewRegistry()
+	reg.Register(fatalConn{t: t, name: "k8s"})
+	reg.Register(fatalConn{t: t, name: "promql"})
+	reg.Probe(context.Background())
+	tp := NewInProcessToolProvider(reg, &snapshot.Snapshot{}, nil)
+
+	for _, name := range []string{"k8s.delete", "promql.evil", "k8s.get.extra"} {
+		res, isErr, err := tp.Invoke(context.Background(), name, json.RawMessage(`{}`))
+		require.NoError(t, err, name)
+		require.True(t, isErr, name)
+		require.Contains(t, string(res), "unknown tool", name)
+	}
+
+	// The advertised capability is in the allow-list (would route to Query).
+	var haveGet bool
+	for _, tl := range tp.Tools() {
+		if tl.Name == "k8s.get" {
+			haveGet = true
+		}
+	}
+	require.True(t, haveGet)
+}
+
+// I8: a nil snapshot must not panic out of Invoke (and thus out of Run).
+func TestNewInProcessToolProviderNilSnapshot(t *testing.T) {
+	tp := NewInProcessToolProvider(connector.NewRegistry(), nil, nil)
+	require.NotPanics(t, func() {
+		_, isErr, err := tp.Invoke(context.Background(), "snapshot.events",
+			json.RawMessage(`{"kind":"Pod","name":"x"}`))
+		require.NoError(t, err)
+		require.False(t, isErr)
+	})
+}
+
 func TestInvokeUnknownTool(t *testing.T) {
 	tp := NewInProcessToolProvider(connector.NewRegistry(), &snapshot.Snapshot{}, nil)
 	_, isErr, err := tp.Invoke(context.Background(), "nope", nil)

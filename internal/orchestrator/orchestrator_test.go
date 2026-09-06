@@ -228,6 +228,34 @@ func TestRunFullLLMPath(t *testing.T) {
 	require.Regexp(t, `^v\d+\+`, res.Report.Meta.LLM.PromptVersion)
 }
 
+// I7: a non-positive GlobalBudget means "no phase timeout", not an
+// already-expired context. A library caller building config.Config directly
+// (bypassing config.Validate) must still get a working LLM phase.
+func TestRunZeroGlobalBudgetStillRunsLLMPhase(t *testing.T) {
+	l := &fakeLLM{responses: []llm.Response{
+		{StopReason: "end_turn", Blocks: []llm.Block{{Type: "text", Text: `{"findings":[{"ruleId":"reliability/crashloop","probableCause":"bad env","confidence":"high","remediation":"fix it"}]}`}}},
+		{StopReason: "end_turn", Blocks: []llm.Block{{Type: "text", Text: `{"correlations":[]}`}}},
+		{StopReason: "end_turn", Blocks: []llm.Block{{Type: "text", Text: `{"headline":"Cluster is degraded","actions":["Restart api-1"]}`}}},
+	}}
+	cfg := testConfig()
+	cfg.LLM.GlobalBudget = 0
+
+	res, err := Run(context.Background(), Options{Config: cfg, Version: "test", K8s: newCrashloopSrc(), LLM: l})
+	require.NoError(t, err)
+	require.NotNil(t, res.Report.Meta.LLM)
+	require.Equal(t, "ok", res.Report.Meta.LLM.Status, "LLM phase runs rather than every group stubbed")
+
+	var crash *analyzer.Finding
+	for i := range res.Report.Findings {
+		if res.Report.Findings[i].RuleID == "reliability/crashloop" {
+			crash = &res.Report.Findings[i]
+		}
+	}
+	require.NotNil(t, crash)
+	require.NotNil(t, crash.Analysis)
+	require.Equal(t, "bad env", crash.Analysis.ProbableCause)
+}
+
 func TestRunNoAPIKey(t *testing.T) {
 	cfg := testConfig()
 	cfg.LLM.Provider = "anthropic"

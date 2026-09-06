@@ -17,10 +17,12 @@ type fakeLLM struct {
 	responses []llm.Response
 	errs      []error
 	calls     int
+	reqs      []llm.Request // every request seen, in order
 }
 
 func (f *fakeLLM) Model() string { return "fake" }
-func (f *fakeLLM) Complete(context.Context, llm.Request) (llm.Response, error) {
+func (f *fakeLLM) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	f.reqs = append(f.reqs, req)
 	i := f.calls
 	f.calls++
 	var err error
@@ -104,6 +106,78 @@ func TestInvestigateHardIterationCeiling(t *testing.T) {
 
 	require.NotNil(t, out[0].Analysis, "group still gets an Analysis after the ceiling fires")
 	require.Contains(t, meta.Warnings, "investigate Pod/p: hit hard iteration ceiling (20)")
+}
+
+// countingTP wraps a ToolProvider and counts Invoke calls.
+type countingTP struct {
+	inner ToolProvider
+	calls int
+}
+
+func (c *countingTP) Tools() []llm.ToolSpec { return c.inner.Tools() }
+func (c *countingTP) Invoke(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, bool, error) {
+	c.calls++
+	return c.inner.Invoke(ctx, name, args)
+}
+
+// C1: maxToolCallsPerGroup must be enforced within a single turn — a turn with
+// N parallel tool_use blocks may not run more than the remaining budget.
+func TestInvestigateEnforcesToolBudgetWithinTurn(t *testing.T) {
+	f := warn(analyzer.Finding{RuleID: "x/y", Object: analyzer.ObjectRef{Kind: "Pod", Name: "p"}})
+	blk := func(id string) llm.Block {
+		return llm.Block{Type: "tool_use", ToolName: "snapshot.events", ToolID: id, Input: json.RawMessage(`{"kind":"Pod","name":"p"}`)}
+	}
+	l := &fakeLLM{responses: []llm.Response{
+		{StopReason: "tool_use", Blocks: []llm.Block{blk("t1"), blk("t2"), blk("t3"), blk("t4"), blk("t5")}},
+		{StopReason: "end_turn", Blocks: []llm.Block{{Type: "text", Text: `{"findings":[{"ruleId":"x/y","probableCause":"c","confidence":"high","remediation":"r"}]}`}}},
+	}}
+	ctp := &countingTP{inner: NewInProcessToolProvider(regWithK8s(t), &snapshot.Snapshot{}, []analyzer.Finding{f})}
+
+	out, meta := Investigate(context.Background(), l, ctp, []analyzer.Finding{f},
+		InvestigateConfig{MaxGroups: 10, Budget: Budget{MaxToolCalls: 2, MaxTokens: 40000}, MaxTokensPerCall: 4096})
+
+	require.LessOrEqual(t, ctp.calls, 2, "tool invoked at most MaxToolCalls times, not once per parallel block")
+	require.Equal(t, 2, meta.ToolCalls)
+	require.NotNil(t, out[0].Analysis)
+	require.Equal(t, "high", out[0].Analysis.Confidence, "loop still terminates with a real Analysis")
+
+	var isErrResults int
+	for _, r := range l.reqs {
+		for _, m := range r.Messages {
+			for _, b := range m.Blocks {
+				if b.Type == "tool_result" && b.IsError && b.Content == "tool call budget exhausted for this object" {
+					isErrResults++
+				}
+			}
+		}
+	}
+	require.GreaterOrEqual(t, isErrResults, 3, "over-budget tool_use blocks get IsError tool_result answers")
+}
+
+// I2: an already-done context short-circuits every remaining group with a
+// "not investigated — budget" stub, one aggregated warning, and zero LLM calls.
+func TestInvestigateShortCircuitsOnDoneContext(t *testing.T) {
+	mk := func(id string) analyzer.Finding {
+		return warn(analyzer.Finding{RuleID: "r/" + id, Object: analyzer.ObjectRef{Kind: "Pod", Name: id}})
+	}
+	findings := []analyzer.Finding{mk("p1"), mk("p2"), mk("p3")}
+	l := &fakeLLM{}
+	tp := NewInProcessToolProvider(regWithK8s(t), &snapshot.Snapshot{}, findings)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	out, meta := Investigate(ctx, l, tp, findings,
+		InvestigateConfig{MaxGroups: 10, Budget: Budget{MaxToolCalls: 8, MaxTokens: 40000}, MaxTokensPerCall: 4096})
+
+	for _, f := range out {
+		require.NotNil(t, f.Analysis)
+		require.Equal(t, "not investigated — budget", f.Analysis.ProbableCause)
+		require.Equal(t, "none", f.Analysis.Confidence)
+	}
+	require.Equal(t, 0, l.calls, "no l.Complete after the context is done")
+	require.Len(t, meta.Warnings, 1, "exactly one aggregated warning")
+	require.Contains(t, meta.Warnings[0], "global budget exhausted")
+	require.Contains(t, meta.Warnings[0], "3 group(s) not investigated")
 }
 
 func TestInvestigateSkipsInfoAndCapsGroups(t *testing.T) {

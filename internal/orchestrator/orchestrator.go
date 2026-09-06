@@ -185,15 +185,26 @@ func runLLMPhase(
 	snap *snapshot.Snapshot,
 	statuses []connector.Status,
 	findings []analyzer.Finding,
-) (enriched []analyzer.Finding, summary *report.Summary, meta *report.LLMMeta) {
-	meta = &report.LLMMeta{Status: "ok", Provider: cfg.LLM.Provider, Model: l.Model()}
+) ([]analyzer.Finding, *report.Summary, *report.LLMMeta) {
+	meta := &report.LLMMeta{Status: "ok", Provider: cfg.LLM.Provider, Model: l.Model()}
 	if _, pv, err := prompts.Load("investigate_system"); err == nil {
 		meta.PromptVersion = pv
 	}
 
-	bctx, cancel := context.WithTimeout(ctx, time.Duration(cfg.LLM.GlobalBudget))
+	// A non-positive GlobalBudget means "no phase timeout", not an
+	// already-expired context. config.Validate rejects <= 0, but only inside
+	// Load — a library caller building config.Config directly (which Options
+	// supports) would otherwise get silent total LLM failure.
+	var bctx context.Context
+	var cancel context.CancelFunc
+	if d := time.Duration(cfg.LLM.GlobalBudget); d > 0 {
+		bctx, cancel = context.WithTimeout(ctx, d)
+	} else {
+		bctx, cancel = context.WithCancel(ctx)
+	}
 	defer cancel()
 	start := time.Now()
+	var summary *report.Summary
 
 	tp := agent.NewInProcessToolProvider(reg, snap, findings)
 	investigated, im := agent.Investigate(bctx, l, tp, findings, agent.InvestigateConfig{
@@ -203,21 +214,30 @@ func runLLMPhase(
 	})
 	findings = investigated
 
-	corr, cw := agent.Correlate(bctx, l, findings, 4096)
-	findings = corr
+	// Once the global-budget context is done, Investigate has already stubbed
+	// every remaining group; Correlate and Synthesize would only issue doomed
+	// calls and append error-warnings, so skip them.
+	var cw, sw []string
+	var hl string
+	var acts []string
+	if bctx.Err() == nil {
+		var corr []analyzer.Finding
+		corr, cw = agent.Correlate(bctx, l, findings, 4096)
+		findings = corr
 
-	var sc agent.SynthCounts
-	for _, f := range findings {
-		switch f.Severity {
-		case analyzer.SeverityCritical:
-			sc.Critical++
-		case analyzer.SeverityWarning:
-			sc.Warning++
-		case analyzer.SeverityInfo:
-			sc.Info++
+		var sc agent.SynthCounts
+		for _, f := range findings {
+			switch f.Severity {
+			case analyzer.SeverityCritical:
+				sc.Critical++
+			case analyzer.SeverityWarning:
+				sc.Warning++
+			case analyzer.SeverityInfo:
+				sc.Info++
+			}
 		}
+		hl, acts, sw = agent.Synthesize(bctx, l, findings, sc, connectorNames(statuses), 4096)
 	}
-	hl, acts, sw := agent.Synthesize(bctx, l, findings, sc, connectorNames(statuses), 4096)
 
 	meta.InputTokens = im.InputTokens
 	meta.OutputTokens = im.OutputTokens

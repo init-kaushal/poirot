@@ -199,7 +199,6 @@ func TestBuildOutputIsByteStableWithFixedLLMContent(t *testing.T) {
 	render := func() string {
 		r := Build(meta, nil, fixed)
 		r.Summary = fixedSummary
-		r.Meta.LLM = &LLMMeta{Status: "ok", Provider: "anthropic", Model: "m", WallClockMs: 1234}
 		r.Meta.LLM = nil // live LLM meta varies run-to-run; excluded from the byte-stability guarantee
 		j, err := r.JSON()
 		require.NoError(t, err)

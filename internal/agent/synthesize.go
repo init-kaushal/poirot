@@ -70,7 +70,11 @@ func Synthesize(ctx context.Context, l llm.LLM, findings []analyzer.Finding, cou
 		return "", nil, []string{fmt.Sprintf("synthesize: %v", err)}
 	}
 
-	payload, _ := json.Marshal(synthPayload{Counts: counts, Connectors: connectors, Findings: views})
+	payload, err := json.Marshal(synthPayload{Counts: counts, Connectors: connectors, Findings: views})
+	if err != nil {
+		// Unreachable today; guarded because the M2 defect had this exact shape.
+		return "", nil, []string{fmt.Sprintf("synthesize: build payload: %v", err)}
+	}
 	resp, err := l.Complete(ctx, llm.Request{
 		System:      system,
 		Messages:    []llm.Message{{Role: llm.RoleUser, Blocks: []llm.Block{{Type: "text", Text: string(payload)}}}},

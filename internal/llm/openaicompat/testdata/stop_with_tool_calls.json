@@ -1,0 +1,32 @@
+{
+  "id": "chatcmpl-stopWithToolCalls",
+  "object": "chat.completion",
+  "created": 1712345690,
+  "model": "gpt-4o-mini",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_stop_1",
+            "type": "function",
+            "function": {
+              "name": "kubectl_get",
+              "arguments": "{\"resource\":\"pods\"}"
+            }
+          }
+        ]
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 5,
+    "total_tokens": 15
+  }
+}

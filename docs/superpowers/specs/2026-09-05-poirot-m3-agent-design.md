@@ -256,7 +256,9 @@ llm:
 "meta": {
   "... M1/M2 fields ...": "unchanged",
   "llm": {
-    "status": "ok",              // ok | skipped: no api key | skipped: disabled | partial: <err>
+    "status": "ok",              // ok | disabled | skipped: no api key | skipped: no baseURL | skipped: <ctor err> | partial: <reason>
+                                 // "disabled" == provider:none / --no-llm (deliberate opt-out — renders no banner);
+                                 // "skipped: *" == wanted LLM but couldn't reach it (renders the ⚠️ banner)
     "provider": "anthropic",
     "model": "claude-sonnet-5",
     "promptVersion": "v1",
