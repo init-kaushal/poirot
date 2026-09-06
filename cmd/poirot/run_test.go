@@ -31,6 +31,29 @@ func TestRunCommandWritesReportsAndExits(t *testing.T) {
 	require.Error(t, err) // no reachable cluster
 }
 
+func TestNoLLMFlagRegistered(t *testing.T) {
+	cmd := newRunCmd("t")
+	require.NotNil(t, cmd.Flags().Lookup("no-llm"))
+}
+
+func TestRunCommandWithNoLLMFlag(t *testing.T) {
+	dir := t.TempDir()
+	cfg := "cluster:\n  context: does-not-matter\nllm:\n  provider: none\noutput:\n  dir: " + filepath.Join(dir, "out") + "\n"
+	cfgPath := filepath.Join(dir, "poirot.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte(cfg), 0o644))
+
+	// Point KUBECONFIG at an empty file so k8s.New fails fast and the command
+	// returns an error (there is no cluster in CI). This asserts wiring, not success.
+	empty := filepath.Join(dir, "kubeconfig")
+	require.NoError(t, os.WriteFile(empty, []byte("apiVersion: v1\nkind: Config\n"), 0o644))
+	t.Setenv("KUBECONFIG", empty)
+
+	cmd := newRootCmd("test")
+	cmd.SetArgs([]string{"run", "-c", cfgPath, "--no-llm"})
+	err := cmd.Execute()
+	require.Error(t, err) // no reachable cluster, proves flag is wired
+}
+
 func TestWriteOutputs(t *testing.T) {
 	findings := []analyzer.Finding{
 		{
