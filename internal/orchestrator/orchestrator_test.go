@@ -13,10 +13,13 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 
+	"github.com/init-kaushal/poirot/internal/analyzer"
 	"github.com/init-kaushal/poirot/internal/config"
 	"github.com/init-kaushal/poirot/internal/connector"
 	"github.com/init-kaushal/poirot/internal/connector/k8s"
+	"github.com/init-kaushal/poirot/internal/llm"
 	"github.com/init-kaushal/poirot/internal/metrics"
+	"github.com/init-kaushal/poirot/internal/report"
 	"github.com/init-kaushal/poirot/internal/snapshot"
 )
 
@@ -145,6 +148,154 @@ func TestRunCollectsMetricsAndRunsSLO(t *testing.T) {
 	}
 	require.True(t, found)
 	require.GreaterOrEqual(t, res.Report.Meta.Counts.Critical, 1) // mem 0.99 => critical
+}
+
+// fakeLLM replays a scripted list of responses; each Complete pops the next and
+// its parallel error. Past the end it returns a bare end_turn response.
+type fakeLLM struct {
+	responses []llm.Response
+	errs      []error
+	calls     int
+}
+
+func (f *fakeLLM) Model() string { return "fake" }
+
+func (f *fakeLLM) Complete(context.Context, llm.Request) (llm.Response, error) {
+	i := f.calls
+	f.calls++
+	var err error
+	if i < len(f.errs) {
+		err = f.errs[i]
+	}
+	if i < len(f.responses) {
+		return f.responses[i], err
+	}
+	return llm.Response{StopReason: "end_turn"}, err
+}
+
+// crashloopClientset stages one pod whose two containers each raise exactly one
+// warning-or-worse reliability finding on the SAME object: "api" is in
+// CrashLoopBackOff (reliability/crashloop, critical) and "sidecar" has 7
+// restarts (reliability/restarts, warning). Same object => one investigate
+// group => one Investigate LLM call; two analysed findings => Correlate fires.
+func crashloopClientset() *fake.Clientset {
+	return fake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "payments"}},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "api-1", Namespace: "payments"},
+			Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{
+				{
+					Name: "api", RestartCount: 9,
+					State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+				},
+				{
+					Name: "sidecar", RestartCount: 7,
+					State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+				},
+			}},
+		},
+	)
+}
+
+func newCrashloopSrc() K8sSource {
+	return k8s.NewWithClient(crashloopClientset(), "test-ctx", k8s.Scope{Lookback: 24 * time.Hour})
+}
+
+func TestRunFullLLMPath(t *testing.T) {
+	l := &fakeLLM{responses: []llm.Response{
+		{StopReason: "end_turn", Blocks: []llm.Block{{Type: "text", Text: `{"findings":[{"ruleId":"reliability/crashloop","probableCause":"bad env","confidence":"high","remediation":"fix it"}]}`}}},
+		{StopReason: "end_turn", Blocks: []llm.Block{{Type: "text", Text: `{"correlations":[]}`}}},
+		{StopReason: "end_turn", Blocks: []llm.Block{{Type: "text", Text: `{"headline":"Cluster is degraded","actions":["Restart api-1"]}`}}},
+	}}
+
+	res, err := Run(context.Background(), Options{Config: testConfig(), Version: "test", K8s: newCrashloopSrc(), LLM: l})
+	require.NoError(t, err)
+
+	var crash *analyzer.Finding
+	for i := range res.Report.Findings {
+		if res.Report.Findings[i].RuleID == "reliability/crashloop" {
+			crash = &res.Report.Findings[i]
+		}
+	}
+	require.NotNil(t, crash, "crashloop finding must be present")
+	require.NotNil(t, crash.Analysis, "crashloop finding must be enriched")
+	require.Equal(t, "bad env", crash.Analysis.ProbableCause)
+
+	require.NotNil(t, res.Report.Summary)
+	require.NotNil(t, res.Report.Meta.LLM)
+	require.Equal(t, "ok", res.Report.Meta.LLM.Status)
+	require.Regexp(t, `^v\d+\+`, res.Report.Meta.LLM.PromptVersion)
+}
+
+func TestRunNoAPIKey(t *testing.T) {
+	cfg := testConfig()
+	cfg.LLM.Provider = "anthropic"
+	t.Setenv(cfg.LLM.APIKeyEnv, "") // APIKeyEnv defaults to POIROT_LLM_API_KEY
+
+	res, err := Run(context.Background(), Options{Config: cfg, Version: "test", K8s: newCrashloopSrc()})
+	require.NoError(t, err)
+
+	for _, f := range res.Report.Findings {
+		require.Nil(t, f.Analysis, "no finding may be enriched when the LLM phase is skipped")
+	}
+	require.Nil(t, res.Report.Summary)
+	require.NotNil(t, res.Report.Meta.LLM)
+	require.Equal(t, "skipped: no api key", res.Report.Meta.LLM.Status)
+
+	// A provider:"none" run of identical inputs is the deterministic baseline.
+	det, err := Run(context.Background(), Options{Config: testConfig(), Version: "test", K8s: newCrashloopSrc()})
+	require.NoError(t, err)
+	require.Equal(t, "disabled", det.Report.Meta.LLM.Status)
+	require.Equal(t, det.ExitCode, res.ExitCode)
+
+	// Per Ruling 5: the two reports differ ONLY in Meta.LLM.Status. Once the
+	// demarcated non-deterministic surface is normalised on both — Meta.LLM,
+	// plus the wall-clock timestamps a live collection stamps (Meta.GeneratedAt
+	// and each Evidence.At, which flow from snapshot CollectedAt = time.Now())
+	// — the JSON must be byte-identical.
+	aj, err := normalizedJSON(res.Report)
+	require.NoError(t, err)
+	bj, err := normalizedJSON(det.Report)
+	require.NoError(t, err)
+	require.Equal(t, string(bj), string(aj))
+}
+
+// normalizedJSON strips the demarcated non-deterministic surface (Meta.LLM and
+// every collection-stamped timestamp) so two independent live Runs of identical
+// inputs can be compared byte-for-byte.
+func normalizedJSON(r report.Report) ([]byte, error) {
+	r.Meta.LLM = nil
+	r.Meta.GeneratedAt = time.Time{}
+	for i := range r.Findings {
+		for j := range r.Findings[i].Evidence {
+			r.Findings[i].Evidence[j].At = time.Time{}
+		}
+	}
+	return r.JSON()
+}
+
+func TestRunLLMErrorMidInvestigate(t *testing.T) {
+	// First Complete succeeds (bare end_turn => unparseable answer), the parse
+	// retry (2nd Complete) errors => the group is stubbed, not enriched.
+	l := &fakeLLM{errs: []error{nil, errors.New("boom")}}
+
+	det, err := Run(context.Background(), Options{Config: testConfig(), Version: "test", K8s: newCrashloopSrc()})
+	require.NoError(t, err)
+
+	res, err := Run(context.Background(), Options{Config: testConfig(), Version: "test", K8s: newCrashloopSrc(), LLM: l})
+	require.NoError(t, err, "an LLM error must never fail Run")
+
+	require.NotNil(t, res.Report.Meta.LLM)
+	require.Regexp(t, `^partial`, res.Report.Meta.LLM.Status)
+	require.Equal(t, det.ExitCode, res.ExitCode, "enrichment must not change the exit code")
+
+	var enriched int
+	for _, f := range res.Report.Findings {
+		if f.Analysis != nil {
+			enriched++
+		}
+	}
+	require.GreaterOrEqual(t, enriched, 1, "at least one finding must carry a stub Analysis")
 }
 
 func TestRunSkipsSLOWhenPromqlAbsent(t *testing.T) {
