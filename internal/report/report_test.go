@@ -62,6 +62,19 @@ func TestBuildNormalisesNilNamespaces(t *testing.T) {
 	require.NotContains(t, string(b), `"namespaces": null`)
 }
 
+func TestBuildThenSetLLMMetaMarshals(t *testing.T) {
+	rep := Build(Meta{Version: "1.0.0"}, nil, nil)
+	rep.Meta.LLM = &LLMMeta{Status: "ok", Provider: "anthropic", Model: "m", PromptVersion: "v1+abcd1234", InputTokens: 10}
+	b, err := rep.JSON()
+	require.NoError(t, err)
+	require.Contains(t, string(b), `"llm"`)
+	require.Contains(t, string(b), `"status": "ok"`)
+
+	b2, err := Build(Meta{Version: "1.0.0"}, nil, nil).JSON()
+	require.NoError(t, err)
+	require.NotContains(t, string(b2), `"llm"`)
+}
+
 func TestJSONRoundTrips(t *testing.T) {
 	r := Build(Meta{Version: "1", GeneratedAt: time.Now()},
 		[]connector.Status{{Name: "k8s", Availability: connector.Availability{State: connector.StateAvailable}}},

@@ -22,6 +22,8 @@ type mdData struct {
 	Domains    []mdDomain
 	HasContent bool
 	Skipped    []string
+	Summary    *Summary
+	LLMBanner  string
 }
 
 type connectorRow struct {
@@ -36,6 +38,7 @@ var mdFuncs = template.FuncMap{
 		v, _ := json.Marshal(e.Value)
 		return fmt.Sprintf("`%s` → %s (%s)", e.Query, string(v), e.Source)
 	},
+	"add": func(a, b int) int { return a + b },
 }
 
 var mdTmpl = template.Must(template.New("report").Funcs(mdFuncs).Parse(`# poirot report
@@ -43,6 +46,9 @@ var mdTmpl = template.Must(template.New("report").Funcs(mdFuncs).Parse(`# poirot
 **{{.Meta.Context}}** · lookback {{.Meta.Lookback}} · generated {{.Meta.GeneratedAt.Format "2006-01-02T15:04:05Z07:00"}} · poirot {{.Meta.Version}}
 
 **{{.Meta.Counts.Critical}} critical · {{.Meta.Counts.Warning}} warning · {{.Meta.Counts.Info}} info**
+{{- if .LLMBanner}}
+{{.LLMBanner}}
+{{- end}}
 
 ## Connector coverage
 
@@ -52,7 +58,14 @@ var mdTmpl = template.Must(template.New("report").Funcs(mdFuncs).Parse(`# poirot
 | {{.Name}} | {{.State}} | {{.Detail}} |
 {{- end}}
 
-## Findings
+{{if .Summary}}## Summary
+
+{{.Summary.Headline}}
+{{range $i, $a := .Summary.Actions}}
+{{add $i 1}}. {{$a}}
+{{- end}}
+
+{{end}}## Findings
 {{if not .HasContent}}{{if .Skipped}}
 No findings from the checks that ran.
 {{else}}
@@ -73,7 +86,8 @@ Evidence:
 Probable cause: {{.Analysis.ProbableCause}}
 Remediation: {{.Analysis.Remediation}}
 Confidence: {{.Analysis.Confidence}}
-{{end}}
+{{if .Analysis.CorrelatedFindings}}Correlated: {{range $i, $c := .Analysis.CorrelatedFindings}}{{if $i}}, {{end}}{{$c}}{{end}}
+{{end}}{{end}}
 {{- end}}{{end}}{{end}}
 ## Checks skipped
 {{if .Skipped}}{{range .Skipped}}
@@ -119,12 +133,19 @@ func (r Report) Markdown() ([]byte, error) {
 		domains = append(domains, mdDomain{Name: n, Findings: byDomain[n]})
 	}
 
+	var banner string
+	if r.Meta.LLM != nil && (strings.HasPrefix(r.Meta.LLM.Status, "skipped") || strings.HasPrefix(r.Meta.LLM.Status, "partial")) {
+		banner = "> ⚠️ AI analysis " + r.Meta.LLM.Status
+	}
+
 	data := mdData{
 		Meta:       r.Meta,
 		Connectors: rows,
 		Domains:    domains,
 		HasContent: len(domains) > 0,
 		Skipped:    skipped,
+		Summary:    r.Summary,
+		LLMBanner:  banner,
 	}
 	var buf bytes.Buffer
 	if err := mdTmpl.Execute(&buf, data); err != nil {

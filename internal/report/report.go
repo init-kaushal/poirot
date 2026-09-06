@@ -23,6 +23,19 @@ type Meta struct {
 	Lookback    string    `json:"lookback"`
 	Namespaces  []string  `json:"namespaces"`
 	Counts      Counts    `json:"counts"`
+	LLM         *LLMMeta  `json:"llm,omitempty"`
+}
+
+type LLMMeta struct {
+	Status        string   `json:"status"`
+	Provider      string   `json:"provider"`
+	Model         string   `json:"model"`
+	PromptVersion string   `json:"promptVersion"`
+	InputTokens   int      `json:"inputTokens"`
+	OutputTokens  int      `json:"outputTokens"`
+	ToolCalls     int      `json:"toolCalls"`
+	WallClockMs   int64    `json:"wallClockMs"`
+	Warnings      []string `json:"warnings"`
 }
 
 type Summary struct {
