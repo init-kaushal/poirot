@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"sigs.k8s.io/yaml"
@@ -186,6 +187,12 @@ func (c *Config) Validate() error {
 	case "none", "warning", "critical":
 	default:
 		return fmt.Errorf("output.failOn must be none|warning|critical, got %q", c.Output.FailOn)
+	}
+	switch u := c.Connectors.PromQL.URL; {
+	case u == "auto" || u == "disabled":
+	case strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://"):
+	default:
+		return fmt.Errorf("connectors.promql.url must be auto|disabled|an http(s) URL, got %q", u)
 	}
 	if time.Duration(c.Scope.Lookback) <= 0 {
 		return fmt.Errorf("scope.lookback must be positive, got %s", time.Duration(c.Scope.Lookback))

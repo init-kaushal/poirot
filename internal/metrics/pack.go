@@ -13,11 +13,12 @@ type Entry struct {
 	Kind Kind
 }
 
+// NOTE: PromQL "expr == 0" / "expr > 0" are FILTERS — they return matching series carrying their original value, not a boolean. pod_not_ready and targets_down rely on this; the saturation exprs guard their divisors with "(... > 0)" so an unlimited container yields no row rather than +Inf.
 func DefaultPack() []Entry {
 	return []Entry{
 		{
 			Name: "cpu_saturation", Kind: KindInstant,
-			Expr: `max by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m]) / (container_spec_cpu_quota{container!="",container!="POD"} / container_spec_cpu_period{container!="",container!="POD"}))`,
+			Expr: `max by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m]) / ((container_spec_cpu_quota{container!="",container!="POD"} / container_spec_cpu_period{container!="",container!="POD"}) > 0))`,
 		},
 		{
 			Name: "mem_saturation", Kind: KindInstant,

@@ -27,6 +27,16 @@ func TestConnectorDisabled(t *testing.T) {
 	require.Contains(t, av.Reason, "disabled")
 }
 
+// TestPromqlProbeDisabled pins the exact absent-state contract the orchestrator
+// relies on: with promql always registered, URL "disabled" must probe as
+// absent / "disabled in config" (no network call), so the connector table lists
+// it and reg.Satisfied(["promql"]) stays false.
+func TestPromqlProbeDisabled(t *testing.T) {
+	av := New(Options{URL: "disabled"}).Probe(context.Background())
+	require.Equal(t, connector.StateAbsent, av.State)
+	require.Equal(t, "disabled in config", av.Reason)
+}
+
 func TestConnectorExplicitURLProbeAndQuery(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(read(t, "vector_ok.json"))

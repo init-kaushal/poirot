@@ -43,7 +43,10 @@ type Options struct {
 	Version string
 	K8s     K8sSource           // nil => built from Config.Cluster + Config.Scope
 	Promql  connector.Connector // nil => built from Config.Connectors.PromQL
-	LLM     llm.LLM             // nil => built from Config.LLM
+	// LLM overrides the provider built from Config.LLM (test seam). When set, it
+	// is used even if Config.LLM.Provider is "none"; Meta.LLM then reflects the
+	// injected client (its Model()), not the config.
+	LLM llm.LLM
 }
 
 // Result is the product of a Run: the canonical report and the process exit code.
@@ -74,24 +77,25 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		src = built
 	}
 
-	// 1. Discover
+	// 1. Discover. The promql connector is always registered — a "disabled" URL
+	// makes it probe as absent ("disabled in config"), so the connector table
+	// lists it as disabled rather than omitting it, and reg.Satisfied(["promql"])
+	// is still false so the slo/skipped info-finding fires.
 	reg := connector.NewRegistry()
 	reg.Register(src)
-	if cfg.Connectors.PromQL.URL != "disabled" {
-		pc := opts.Promql
-		if pc == nil {
-			url := cfg.Connectors.PromQL.URL
-			if url == "" {
-				url = "auto"
-			}
-			pc = promql.New(promql.Options{
-				URL:        url,
-				Clientset:  src.Clientset(),
-				Namespaces: cfg.Scope.Namespaces,
-			})
+	pc := opts.Promql
+	if pc == nil {
+		url := cfg.Connectors.PromQL.URL
+		if url == "" {
+			url = "auto"
 		}
-		reg.Register(pc)
+		pc = promql.New(promql.Options{
+			URL:        url,
+			Clientset:  src.Clientset(),
+			Namespaces: cfg.Scope.Namespaces,
+		})
 	}
+	reg.Register(pc)
 	statuses := reg.Probe(ctx)
 	for _, s := range statuses {
 		if s.Name == "k8s" && s.Availability.State != connector.StateAvailable {
@@ -152,54 +156,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 	if l != nil {
-		llmMeta = &report.LLMMeta{Status: "ok", Provider: cfg.LLM.Provider, Model: l.Model()}
-		if _, pv, err := prompts.Load("investigate_system"); err == nil {
-			llmMeta.PromptVersion = pv
-		}
-
-		bctx, cancel := context.WithTimeout(ctx, time.Duration(cfg.LLM.GlobalBudget))
-		start := time.Now()
-
-		tp := agent.NewInProcessToolProvider(reg, snap, findings)
-		enriched, im := agent.Investigate(bctx, l, tp, findings, agent.InvestigateConfig{
-			MaxGroups:        cfg.LLM.MaxFindingsInvestigated,
-			Budget:           agent.Budget{MaxToolCalls: cfg.LLM.MaxToolCallsPerGroup, MaxTokens: cfg.LLM.MaxTokensPerGroup},
-			MaxTokensPerCall: 4096,
-		})
-		findings = enriched
-
-		corr, cw := agent.Correlate(bctx, l, findings, 4096)
-		findings = corr
-
-		var sc agent.SynthCounts
-		for _, f := range findings {
-			switch f.Severity {
-			case analyzer.SeverityCritical:
-				sc.Critical++
-			case analyzer.SeverityWarning:
-				sc.Warning++
-			case analyzer.SeverityInfo:
-				sc.Info++
-			}
-		}
-		hl, acts, sw := agent.Synthesize(bctx, l, findings, sc, connectorNames(statuses), 4096)
-		cancel()
-
-		llmMeta.InputTokens = im.InputTokens
-		llmMeta.OutputTokens = im.OutputTokens
-		llmMeta.ToolCalls = im.ToolCalls
-		if w := append(append(append([]string{}, im.Warnings...), cw...), sw...); len(w) > 0 {
-			llmMeta.Warnings = w
-		}
-		llmMeta.WallClockMs = time.Since(start).Milliseconds()
-		if hl != "" {
-			summary = &report.Summary{Headline: hl, Actions: acts}
-		}
-		if bctx.Err() == context.DeadlineExceeded {
-			llmMeta.Status = "partial: global budget exceeded"
-		} else if len(llmMeta.Warnings) > 0 && llmMeta.Status == "ok" {
-			llmMeta.Status = "partial: see warnings"
-		}
+		findings, summary, llmMeta = runLLMPhase(ctx, l, cfg, reg, snap, statuses, findings)
 	}
 
 	// 7. Assemble
@@ -214,6 +171,70 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	rep.Summary = summary
 	rep.Meta.LLM = llmMeta
 	return &Result{Report: rep, ExitCode: rep.ExitCode(cfg.Output.FailOn)}, nil
+}
+
+// runLLMPhase runs phases 4-6 (Investigate → Correlate → Synthesize) against a
+// resolved client under a single global-budget context. It is a pure refactor
+// of the block that used to live inline in Run: it never fails, folding every
+// error mode into meta.Status / meta.Warnings.
+func runLLMPhase(
+	ctx context.Context,
+	l llm.LLM,
+	cfg *config.Config,
+	reg *connector.Registry,
+	snap *snapshot.Snapshot,
+	statuses []connector.Status,
+	findings []analyzer.Finding,
+) (enriched []analyzer.Finding, summary *report.Summary, meta *report.LLMMeta) {
+	meta = &report.LLMMeta{Status: "ok", Provider: cfg.LLM.Provider, Model: l.Model()}
+	if _, pv, err := prompts.Load("investigate_system"); err == nil {
+		meta.PromptVersion = pv
+	}
+
+	bctx, cancel := context.WithTimeout(ctx, time.Duration(cfg.LLM.GlobalBudget))
+	defer cancel()
+	start := time.Now()
+
+	tp := agent.NewInProcessToolProvider(reg, snap, findings)
+	investigated, im := agent.Investigate(bctx, l, tp, findings, agent.InvestigateConfig{
+		MaxGroups:        cfg.LLM.MaxFindingsInvestigated,
+		Budget:           agent.Budget{MaxToolCalls: cfg.LLM.MaxToolCallsPerGroup, MaxTokens: cfg.LLM.MaxTokensPerGroup},
+		MaxTokensPerCall: 4096,
+	})
+	findings = investigated
+
+	corr, cw := agent.Correlate(bctx, l, findings, 4096)
+	findings = corr
+
+	var sc agent.SynthCounts
+	for _, f := range findings {
+		switch f.Severity {
+		case analyzer.SeverityCritical:
+			sc.Critical++
+		case analyzer.SeverityWarning:
+			sc.Warning++
+		case analyzer.SeverityInfo:
+			sc.Info++
+		}
+	}
+	hl, acts, sw := agent.Synthesize(bctx, l, findings, sc, connectorNames(statuses), 4096)
+
+	meta.InputTokens = im.InputTokens
+	meta.OutputTokens = im.OutputTokens
+	meta.ToolCalls = im.ToolCalls
+	if w := append(append(append([]string{}, im.Warnings...), cw...), sw...); len(w) > 0 {
+		meta.Warnings = w
+	}
+	meta.WallClockMs = time.Since(start).Milliseconds()
+	if hl != "" {
+		summary = &report.Summary{Headline: hl, Actions: acts}
+	}
+	if bctx.Err() == context.DeadlineExceeded {
+		meta.Status = "partial: global budget exceeded"
+	} else if len(meta.Warnings) > 0 && meta.Status == "ok" {
+		meta.Status = "partial: see warnings"
+	}
+	return findings, summary, meta
 }
 
 // connectorNames returns the sorted connector status names.

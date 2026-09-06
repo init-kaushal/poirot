@@ -26,15 +26,16 @@ import (
 func testConfig() *config.Config {
 	c := config.Default()
 	c.LLM.Provider = "none"
-	// Keep M1-era tests hermetic: don't let the orchestrator build and probe a
-	// real promql connector. Tests that exercise the metrics/slo path opt back
-	// in with their own URL and an injected fake (see promqlConfig).
+	// Keep M1-era tests hermetic: promql is always registered now, but URL
+	// "disabled" makes Probe short-circuit to absent without any network call.
+	// Tests that exercise the metrics/slo path opt back in with their own URL
+	// and an injected fake (see promqlConfig).
 	c.Connectors.PromQL.URL = "disabled"
 	return c
 }
 
-// promqlConfig is testConfig with promql registration re-enabled, so an injected
-// fake promql connector (opts.Promql) is registered and probed.
+// promqlConfig is testConfig with a non-"disabled" URL, so an injected fake
+// promql connector (opts.Promql) is probed as if real.
 func promqlConfig() *config.Config {
 	c := testConfig()
 	c.Connectors.PromQL.URL = "auto"
@@ -262,15 +263,23 @@ func TestRunNoAPIKey(t *testing.T) {
 
 // normalizedJSON strips the demarcated non-deterministic surface (Meta.LLM and
 // every collection-stamped timestamp) so two independent live Runs of identical
-// inputs can be compared byte-for-byte.
+// inputs can be compared byte-for-byte. It operates on a deep-enough copy so the
+// caller's report (its Findings and Evidence slices) is never mutated.
 func normalizedJSON(r report.Report) ([]byte, error) {
 	r.Meta.LLM = nil
 	r.Meta.GeneratedAt = time.Time{}
-	for i := range r.Findings {
-		for j := range r.Findings[i].Evidence {
-			r.Findings[i].Evidence[j].At = time.Time{}
+
+	findings := make([]analyzer.Finding, len(r.Findings))
+	copy(findings, r.Findings)
+	for i := range findings {
+		ev := make([]analyzer.Evidence, len(findings[i].Evidence))
+		copy(ev, findings[i].Evidence)
+		for j := range ev {
+			ev[j].At = time.Time{}
 		}
+		findings[i].Evidence = ev
 	}
+	r.Findings = findings
 	return r.JSON()
 }
 
@@ -296,6 +305,58 @@ func TestRunLLMErrorMidInvestigate(t *testing.T) {
 		}
 	}
 	require.GreaterOrEqual(t, enriched, 1, "at least one finding must carry a stub Analysis")
+}
+
+func TestRunPopulatesCorrelatedFindings(t *testing.T) {
+	// crashloopClientset yields two analysed findings on one object:
+	// reliability/crashloop (critical) and reliability/restarts (warning).
+	// Object.String() == "Pod/payments/api-1", so refKey ==
+	// "<ruleId>@Pod/payments/api-1" (see agent.refKey / correlate.go).
+	const crashKey = "reliability/crashloop@Pod/payments/api-1"
+	const restartKey = "reliability/restarts@Pod/payments/api-1"
+
+	l := &fakeLLM{responses: []llm.Response{
+		{StopReason: "end_turn", Blocks: []llm.Block{{Type: "text", Text: `{"findings":[` +
+			`{"ruleId":"reliability/crashloop","probableCause":"bad env","confidence":"high","remediation":"fix env"},` +
+			`{"ruleId":"reliability/restarts","probableCause":"same bad env","confidence":"medium","remediation":"fix env"}]}`}}},
+		{StopReason: "end_turn", Blocks: []llm.Block{{Type: "text", Text: `{"correlations":[` +
+			`{"key":"` + crashKey + `","related":["` + restartKey + `"]}]}`}}},
+		{StopReason: "end_turn", Blocks: []llm.Block{{Type: "text", Text: `{"headline":"degraded","actions":["restart"]}`}}},
+	}}
+
+	res, err := Run(context.Background(), Options{Config: testConfig(), Version: "test", K8s: newCrashloopSrc(), LLM: l})
+	require.NoError(t, err)
+
+	var crash *analyzer.Finding
+	for i := range res.Report.Findings {
+		if res.Report.Findings[i].RuleID == "reliability/crashloop" {
+			crash = &res.Report.Findings[i]
+		}
+	}
+	require.NotNil(t, crash)
+	require.NotNil(t, crash.Analysis)
+	require.NotEmpty(t, crash.Analysis.CorrelatedFindings, "correlate pass must populate CorrelatedFindings")
+	require.Contains(t, crash.Analysis.CorrelatedFindings, restartKey)
+}
+
+func TestRunNoAPIKeyRendersBanner(t *testing.T) {
+	cfg := testConfig()
+	cfg.LLM.Provider = "anthropic"
+	t.Setenv(cfg.LLM.APIKeyEnv, "")
+
+	res, err := Run(context.Background(), Options{Config: cfg, Version: "test", K8s: newCrashloopSrc()})
+	require.NoError(t, err)
+	require.Equal(t, "skipped: no api key", res.Report.Meta.LLM.Status)
+	md, err := res.Report.Markdown()
+	require.NoError(t, err)
+	require.Contains(t, string(md), "> ⚠️ AI analysis skipped: no api key")
+
+	// provider:"none" is not a degradation — no banner.
+	det, err := Run(context.Background(), Options{Config: testConfig(), Version: "test", K8s: newCrashloopSrc()})
+	require.NoError(t, err)
+	dmd, err := det.Report.Markdown()
+	require.NoError(t, err)
+	require.NotContains(t, string(dmd), "⚠️ AI analysis")
 }
 
 func TestRunSkipsSLOWhenPromqlAbsent(t *testing.T) {

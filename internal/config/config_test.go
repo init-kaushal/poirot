@@ -111,3 +111,15 @@ func TestValidateRejectsZeroMaxFindingsInvestigated(t *testing.T) {
 	err := cfg.Validate()
 	require.ErrorContains(t, err, "maxFindingsInvestigated")
 }
+
+func TestValidateRejectsBadPromqlURL(t *testing.T) {
+	cfg := Default()
+	cfg.Connectors.PromQL.URL = "Auto" // case-sensitive: only "auto" is accepted
+	err := cfg.Validate()
+	require.ErrorContains(t, err, "connectors.promql.url")
+
+	for _, ok := range []string{"auto", "disabled", "http://prom:9090", "https://prom.example/api"} {
+		cfg.Connectors.PromQL.URL = ok
+		require.NoError(t, cfg.Validate(), "URL %q must be accepted", ok)
+	}
+}
