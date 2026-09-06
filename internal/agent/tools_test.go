@@ -48,6 +48,16 @@ func (erroringConn) Query(context.Context, string, json.RawMessage) (json.RawMes
 	return nil, errors.New("boom")
 }
 
+// regWithK8s returns a probed registry exposing one available fake "k8s"
+// connector, so connector-routed tool calls (k8s.*) resolve during tests.
+func regWithK8s(t *testing.T) *connector.Registry {
+	t.Helper()
+	reg := connector.NewRegistry()
+	reg.Register(fakeConn{name: "k8s", avail: connector.StateAvailable})
+	reg.Probe(context.Background())
+	return reg
+}
+
 func TestToolsListsOnlyAvailableConnectors(t *testing.T) {
 	reg := connector.NewRegistry()
 	reg.Register(fakeConn{name: "k8s", avail: connector.StateAvailable})
