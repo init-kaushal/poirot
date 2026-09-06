@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/init-kaushal/poirot/internal/snapshot"
@@ -90,6 +91,8 @@ func (c *Connector) Collect(ctx context.Context) (*snapshot.Snapshot, error) {
 		snap.Services = append(snap.Services, svcs.Items...)
 	}
 
+	c.collectFlaggedPodLogs(ctx, snap)
+
 	snap.Meta = snapshot.Meta{
 		CollectedAt: time.Now(),
 		Lookback:    c.scope.Lookback,
@@ -97,6 +100,110 @@ func (c *Connector) Collect(ctx context.Context) (*snapshot.Snapshot, error) {
 		Namespaces:  namespaces,
 	}
 	return snap, nil
+}
+
+// flaggedPodLogCap bounds how many flagged pods the collect phase pulls logs
+// for, so a badly broken cluster cannot make collection unbounded.
+const flaggedPodLogCap = 20
+
+// flaggedWaitingReasons are container "Waiting" reasons that mark a pod as
+// unhealthy enough to capture recent logs for during collection.
+var flaggedWaitingReasons = map[string]bool{
+	"CrashLoopBackOff": true,
+	"ImagePullBackOff": true,
+	"ErrImagePull":     true,
+}
+
+// collectFlaggedPodLogs pulls recent current and previous logs for up to
+// flaggedPodLogCap pods that the reliability rules would flag, in deterministic
+// order (namespace, then name), appending every non-empty result to
+// snap.PodLogs. It is best-effort: a podLogs error for any pod/container is
+// skipped silently — collection stays quiet and never fails here. The map key
+// is "Pod/<namespace>/<name>", which equals
+// analyzer.ObjectRef{Kind:"Pod",Namespace,Name}.String() (snapshot is a leaf
+// package, so T6 relies on this string form rather than importing analyzer).
+// snap.PodLogs stays nil unless at least one chunk is produced.
+func (c *Connector) collectFlaggedPodLogs(ctx context.Context, snap *snapshot.Snapshot) {
+	var flagged []*corev1.Pod
+	for i := range snap.Pods {
+		if podIsFlagged(&snap.Pods[i]) {
+			flagged = append(flagged, &snap.Pods[i])
+		}
+	}
+	sort.Slice(flagged, func(a, b int) bool {
+		if flagged[a].Namespace != flagged[b].Namespace {
+			return flagged[a].Namespace < flagged[b].Namespace
+		}
+		return flagged[a].Name < flagged[b].Name
+	})
+	if len(flagged) > flaggedPodLogCap {
+		flagged = flagged[:flaggedPodLogCap]
+	}
+
+	for _, pod := range flagged {
+		key := "Pod/" + pod.Namespace + "/" + pod.Name
+		for _, container := range flaggedPodContainers(pod) {
+			for _, previous := range []bool{false, true} {
+				lines, err := c.podLogs(ctx, pod.Namespace, pod.Name, container, previous, 100)
+				if err != nil || lines == "" {
+					continue
+				}
+				if snap.PodLogs == nil {
+					snap.PodLogs = make(map[string][]snapshot.LogChunk)
+				}
+				snap.PodLogs[key] = append(snap.PodLogs[key], snapshot.LogChunk{
+					Container: container,
+					Previous:  previous,
+					Lines:     lines,
+				})
+			}
+		}
+	}
+}
+
+// podIsFlagged reports whether the reliability rules would flag this pod, so
+// the collect phase should pull its recent logs. A pod is flagged when any
+// container status is Waiting with a reason in flaggedWaitingReasons, or was
+// last terminated with reason "OOMKilled", or the pod is Running with a Ready
+// condition whose status is not "True".
+func podIsFlagged(pod *corev1.Pod) bool {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if w := cs.State.Waiting; w != nil && flaggedWaitingReasons[w.Reason] {
+			return true
+		}
+		if t := cs.LastTerminationState.Terminated; t != nil && t.Reason == "OOMKilled" {
+			return true
+		}
+	}
+	if pod.Status.Phase == corev1.PodRunning {
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodReady && cond.Status != corev1.ConditionTrue {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// flaggedPodContainers returns the container names to pull logs for: those
+// currently Waiting or carrying a LastTerminationState.Terminated, else the
+// first container in the pod spec.
+func flaggedPodContainers(pod *corev1.Pod) []string {
+	var names []string
+	seen := map[string]bool{}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Waiting == nil && cs.LastTerminationState.Terminated == nil {
+			continue
+		}
+		if !seen[cs.Name] {
+			seen[cs.Name] = true
+			names = append(names, cs.Name)
+		}
+	}
+	if len(names) == 0 && len(pod.Spec.Containers) > 0 {
+		names = append(names, pod.Spec.Containers[0].Name)
+	}
+	return names
 }
 
 // targetNamespaces resolves the namespaces to inspect: the explicit scope list

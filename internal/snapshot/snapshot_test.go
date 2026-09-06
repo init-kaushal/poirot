@@ -24,3 +24,16 @@ func TestSnapshotHasMetricsField(t *testing.T) {
 	s.Metrics = &MetricSet{Backend: "prometheus"}
 	require.Equal(t, "prometheus", s.Metrics.Backend)
 }
+
+func TestSnapshotHasPodLogsField(t *testing.T) {
+	var s Snapshot
+	require.Nil(t, s.PodLogs) // zero value is nil map
+
+	s.PodLogs = map[string][]LogChunk{
+		"Pod/p/api-1": {{Container: "api", Previous: true, Lines: "boom"}},
+	}
+	chunk := s.PodLogs["Pod/p/api-1"][0]
+	require.Equal(t, "api", chunk.Container)
+	require.True(t, chunk.Previous)
+	require.Equal(t, "boom", chunk.Lines)
+}

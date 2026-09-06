@@ -40,6 +40,29 @@ func TestCollectGathersScopedObjects(t *testing.T) {
 	require.Len(t, snap.Pods, 1)
 }
 
+func TestCollectPullsLogsForFlaggedPods(t *testing.T) {
+	crash := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "api-1", Namespace: "p"},
+		Status: corev1.PodStatus{
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name:  "api",
+				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+			}},
+		},
+	}
+	healthy := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "ok-1", Namespace: "p"},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning}}
+	cs := fake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "p"}}, crash, healthy)
+	c := NewWithClient(cs, "ctx", Scope{Lookback: time.Hour})
+
+	snap, err := c.Collect(context.Background())
+	require.NoError(t, err)
+	require.Contains(t, snap.PodLogs, "Pod/p/api-1")
+	require.NotContains(t, snap.PodLogs, "Pod/p/ok-1")
+	require.NotEmpty(t, snap.PodLogs["Pod/p/api-1"][0].Lines) // fake returns "fake logs"
+}
+
 func TestCollectExplicitNamespaces(t *testing.T) {
 	cs := fake.NewSimpleClientset(
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "a"}},

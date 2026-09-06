@@ -33,6 +33,19 @@ type Snapshot struct {
 	PVCs         []corev1.PersistentVolumeClaim
 	Services     []corev1.Service
 	Metrics      *MetricSet
+	// PodLogs holds recent log captures pulled during collection for pods the
+	// reliability rules would flag. The key is "Pod/<namespace>/<name>", which
+	// is identical to analyzer.ObjectRef{Kind:"Pod",Namespace,Name}.String();
+	// snapshot is a leaf package and must not import analyzer, so the key is
+	// built by string concatenation both here and in the k8s collect phase.
+	PodLogs map[string][]LogChunk `json:"podLogs,omitempty"`
+}
+
+// LogChunk is one pod-container log capture taken during collection.
+type LogChunk struct {
+	Container string `json:"container"`
+	Previous  bool   `json:"previous"`
+	Lines     string `json:"lines"`
 }
 
 // MetricSample is one time series' current value with its label set.
