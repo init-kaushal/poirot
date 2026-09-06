@@ -21,11 +21,14 @@ scope:
 focus: []
 
 llm:
-  # M1 does not use an LLM. Valid values: anthropic | openai-compatible | none.
-  provider: none
-  model: claude-sonnet-5
-  maxToolCallsPerFinding: 6
-  maxFindingsInvestigated: 15
+  provider: anthropic            # anthropic | openai-compatible | none
+  model: claude-sonnet-5         # required unless provider is none
+  apiKeyEnv: POIROT_LLM_API_KEY  # env var holding the API key
+  baseURL: ""                    # override endpoint (proxies / openai-compatible servers)
+  maxToolCallsPerGroup: 8        # tool calls the agent may make per object under investigation
+  maxTokensPerGroup: 40000       # token budget per object (>= 1000)
+  maxFindingsInvestigated: 15    # how many object groups to investigate
+  globalBudget: 5m               # wall-clock ceiling for the whole LLM phase
 
 output:
   # report.json (canonical) and report.md are written here.

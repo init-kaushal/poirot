@@ -1,6 +1,7 @@
 package report
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -110,4 +111,105 @@ func TestBuildOutputIsByteStable(t *testing.T) {
 
 func ev(query string, value any, at time.Time) analyzer.Evidence {
 	return analyzer.Evidence{Source: "k8s", Query: query, Value: value, At: at}
+}
+
+// sortFixture is a small unsorted finding set spanning 2 domains and 3
+// severities, with evidence, used by the analysis-independence tests.
+func sortFixture(at time.Time) []analyzer.Finding {
+	return []analyzer.Finding{
+		{
+			RuleID: "reliability/no-limits", Domain: "reliability", Severity: analyzer.SeverityInfo,
+			Title: "No resource limits", Object: analyzer.ObjectRef{Kind: "Pod", Namespace: "n", Name: "b"},
+			Summary: "Pod/n/b has no limits", Evidence: []analyzer.Evidence{ev("pod.spec.containers[].resources", nil, at)},
+		},
+		{
+			RuleID: "reliability/crashloop", Domain: "reliability", Severity: analyzer.SeverityCritical,
+			Title: "CrashLoopBackOff", Object: analyzer.ObjectRef{Kind: "Pod", Namespace: "n", Name: "z"},
+			Summary: "Pod/n/z crashlooping", Evidence: []analyzer.Evidence{ev("pod.status", "CrashLoopBackOff", at)},
+		},
+		{
+			RuleID: "security/privileged", Domain: "security", Severity: analyzer.SeverityWarning,
+			Title: "Privileged container", Object: analyzer.ObjectRef{Kind: "DaemonSet", Namespace: "kube-system", Name: "agent"},
+			Summary: "DaemonSet/kube-system/agent is privileged", Evidence: []analyzer.Evidence{ev("pod.spec.containers[].securityContext.privileged", true, at)},
+		},
+		{
+			RuleID: "reliability/oomkilled", Domain: "reliability", Severity: analyzer.SeverityWarning,
+			Title: "OOMKilled", Object: analyzer.ObjectRef{Kind: "Pod", Namespace: "n", Name: "a"},
+			Summary: "Pod/n/a OOMKilled", Evidence: []analyzer.Evidence{ev("pod.status.lastState", "OOMKilled", at)},
+		},
+	}
+}
+
+// TestReportSortingIgnoresAnalysis proves the deterministic core (finding order
+// + every non-Analysis field) is byte-for-byte independent of whether an
+// *Analysis / Summary is attached: the LLM layer decorates, it never reorders.
+func TestReportSortingIgnoresAnalysis(t *testing.T) {
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	meta := Meta{Version: "1.0.0", GeneratedAt: at}
+
+	plain := sortFixture(at)
+
+	decorated := sortFixture(at)
+	for i := range decorated {
+		decorated[i].Analysis = &analyzer.Analysis{
+			ProbableCause: "cause-" + decorated[i].RuleID,
+			Confidence:    "high",
+			Remediation:   "fix-" + decorated[i].RuleID,
+		}
+	}
+
+	a := Build(meta, nil, plain)
+	b := Build(meta, nil, decorated)
+	b.Summary = &Summary{Headline: "things are on fire", Actions: []string{"page someone"}}
+
+	require.Equal(t, len(a.Findings), len(b.Findings))
+	for i := range a.Findings {
+		require.Nil(t, a.Findings[i].Analysis)
+		require.NotNil(t, b.Findings[i].Analysis, "fixture should decorate every finding")
+
+		require.Equal(t, a.Findings[i].RuleID, b.Findings[i].RuleID, "order diverged at %d", i)
+		require.Equal(t, a.Findings[i].Domain, b.Findings[i].Domain)
+		require.Equal(t, a.Findings[i].Severity, b.Findings[i].Severity)
+		require.True(t, reflect.DeepEqual(a.Findings[i].Object, b.Findings[i].Object), "Object differs at %d", i)
+		require.True(t, reflect.DeepEqual(a.Findings[i].Evidence, b.Findings[i].Evidence), "Evidence differs at %d", i)
+	}
+	require.Equal(t, a.Meta.Counts, b.Meta.Counts)
+}
+
+// TestBuildOutputIsByteStableWithFixedLLMContent is the sibling of
+// TestBuildOutputIsByteStable: byte-stability holds for the deterministic core
+// plus any *fixed* LLM content; live LLM content varies and is out of scope for
+// this test. It renders 50x with a fixed *Analysis on every finding and a fixed
+// Summary, blanking Meta.LLM before each JSON() call.
+func TestBuildOutputIsByteStableWithFixedLLMContent(t *testing.T) {
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	meta := Meta{Version: "1.2.3", GeneratedAt: at, Context: "prod", Lookback: "24h"}
+
+	fixed := sortFixture(at)
+	for i := range fixed {
+		fixed[i].Analysis = &analyzer.Analysis{
+			ProbableCause:      "fixed cause",
+			CorrelatedFindings: []string{"reliability/crashloop@Pod/n/z"},
+			Confidence:         "medium",
+			Remediation:        "fixed remediation",
+		}
+	}
+	fixedSummary := &Summary{Headline: "fixed headline", Actions: []string{"a", "b"}}
+
+	render := func() string {
+		r := Build(meta, nil, fixed)
+		r.Summary = fixedSummary
+		r.Meta.LLM = nil // live LLM meta varies run-to-run; excluded from the byte-stability guarantee
+		j, err := r.JSON()
+		require.NoError(t, err)
+		return string(j)
+	}
+
+	first := render()
+	require.Contains(t, first, `"analysis"`)
+	require.Contains(t, first, `"summary"`)
+	require.NotContains(t, first, `"llm"`)
+	for i := 0; i < 50; i++ {
+		require.Equal(t, first, render(), "JSON output differs on iteration %d", i)
+	}
 }

@@ -24,8 +24,24 @@ sleep 60
 kubectl delete namespace poirot-demo     # teardown
 ```
 
-Status: M2 — reliability + slo (metrics golden signals, scrape health) + change (rollout risk). No LLM.
+Status: M3 — reliability + slo + change, plus an LLM investigation layer (probable cause, correlation, executive summary). Runs with no API key (analysis skipped, deterministic report).
 
 The `slo` analyzer needs a PromQL-compatible backend (Prometheus, VictoriaMetrics,
 Thanos, Mimir). Set `connectors.promql.url` to `auto` (discovered + reached via the
 API-server proxy), an explicit URL, or `disabled`.
+
+## LLM analysis
+
+After the deterministic analyzers run, poirot can enrich warning-or-worse
+findings with a probable cause, cross-finding correlations, and an executive
+summary. This layer is additive: the deterministic core of `report.json` /
+`report.md` is byte-identical whether or not it runs.
+
+- Set the API key: `export POIROT_LLM_API_KEY=...` (the env var name is
+  `llm.apiKeyEnv` in `poirot.yaml`).
+- Configure the provider in `poirot.yaml`: `llm.provider` is `anthropic`,
+  `openai-compatible`, or `none`; set `llm.model` (required unless the provider
+  is `none`), and `llm.baseURL` for `openai-compatible`.
+- `poirot run --no-llm` forces the deterministic-only report regardless of config.
+- With no API key the LLM phase is skipped, and the report notes it
+  (`meta.llm.status` and a banner in `report.md`).

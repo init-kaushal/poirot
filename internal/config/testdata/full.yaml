@@ -8,6 +8,13 @@ connectors:
   promql: { url: "http://prom.mon:9090" }
 focus: [cost]
 llm:
-  provider: none
+  provider: openai-compatible
+  model: llama3.1
+  apiKeyEnv: MY_KEY
+  baseURL: http://localhost:11434/v1
+  maxToolCallsPerGroup: 4
+  maxTokensPerGroup: 20000
+  maxFindingsInvestigated: 5
+  globalBudget: 2m
 output:
   failOn: warning

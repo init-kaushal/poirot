@@ -14,6 +14,7 @@ import (
 
 func newRunCmd(version string) *cobra.Command {
 	var cfgPath string
+	var noLLM bool
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Assess a cluster and write report.json + report.md",
@@ -22,6 +23,9 @@ func newRunCmd(version string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if noLLM {
+				cfg.LLM.Provider = "none"
+			}
 			res, err := orchestrator.Run(cmd.Context(), orchestrator.Options{Config: cfg, Version: version})
 			if err != nil {
 				return err
@@ -29,10 +33,16 @@ func newRunCmd(version string) *cobra.Command {
 			if err := writeOutputs(cfg.Output.Dir, res.Report); err != nil {
 				return err
 			}
+			var llmStatus string
+			if res.Report.Meta.LLM != nil {
+				llmStatus = res.Report.Meta.LLM.Status
+			} else {
+				llmStatus = "disabled"
+			}
 			c := res.Report.Meta.Counts
 			fmt.Fprintf(cmd.OutOrStdout(),
-				"wrote %s/report.json and %s/report.md — %d critical, %d warning, %d info\n",
-				cfg.Output.Dir, cfg.Output.Dir, c.Critical, c.Warning, c.Info)
+				"wrote %s/report.json and %s/report.md — %d critical, %d warning, %d info — AI analysis: %s\n",
+				cfg.Output.Dir, cfg.Output.Dir, c.Critical, c.Warning, c.Info, llmStatus)
 			if res.ExitCode != 0 {
 				return &ExitError{Code: res.ExitCode}
 			}
@@ -40,6 +50,7 @@ func newRunCmd(version string) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&cfgPath, "config", "c", "poirot.yaml", "path to the poirot config file")
+	cmd.Flags().BoolVar(&noLLM, "no-llm", false, "skip the LLM investigation/synthesis phases")
 	return cmd
 }
 

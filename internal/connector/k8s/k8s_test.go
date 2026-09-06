@@ -21,12 +21,6 @@ func TestProbeAvailableWithFakeClient(t *testing.T) {
 	require.Equal(t, connector.StateAvailable, av.State)
 }
 
-func TestQueryUnsupportedInM1(t *testing.T) {
-	c := NewWithClient(fake.NewSimpleClientset(), "test-ctx", Scope{})
-	_, err := c.Query(context.Background(), "anything", nil)
-	require.ErrorContains(t, err, "no queryable capabilities")
-}
-
 func TestClientsetGetterReturnsInjected(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	c := NewWithClient(cs, "ctx", Scope{})

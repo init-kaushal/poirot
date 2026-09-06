@@ -72,6 +72,42 @@ func TestMarkdownEscapesPipeInConnectorDetail(t *testing.T) {
 	require.Contains(t, string(md), `dial a\|b failed`)
 }
 
+func TestMarkdownSummarySection(t *testing.T) {
+	rep := Build(Meta{Version: "v", Context: "c", Lookback: "24h"}, nil, nil)
+	rep.Summary = &Summary{Headline: "payments down", Actions: []string{"do A", "do B"}}
+	md, err := rep.Markdown()
+	require.NoError(t, err)
+	s := string(md)
+	require.Contains(t, s, "## Summary")
+	require.Contains(t, s, "payments down")
+	require.Contains(t, s, "1. do A")
+	require.Contains(t, s, "2. do B")
+}
+
+func TestMarkdownSkippedBanner(t *testing.T) {
+	rep := Build(Meta{Version: "v", Context: "c", Lookback: "24h"}, nil, nil)
+	rep.Meta.LLM = &LLMMeta{Status: "skipped: no api key"}
+	md, err := rep.Markdown()
+	require.NoError(t, err)
+	require.Contains(t, string(md), "> ⚠️ AI analysis skipped: no api key")
+
+	rep.Meta.LLM = &LLMMeta{Status: "ok"}
+	md, err = rep.Markdown()
+	require.NoError(t, err)
+	require.NotContains(t, string(md), "AI analysis")
+}
+
+func TestMarkdownCorrelatedLine(t *testing.T) {
+	rep := Build(Meta{Version: "v", Context: "c", Lookback: "24h"}, nil, []analyzer.Finding{{
+		RuleID: "x/y", Domain: "x", Severity: analyzer.SeverityWarning, Title: "T",
+		Object: analyzer.ObjectRef{Kind: "Pod", Name: "p"}, Summary: "s",
+		Analysis: &analyzer.Analysis{ProbableCause: "x", Confidence: "high", CorrelatedFindings: []string{"b/2@Pod/p/y"}},
+	}})
+	md, err := rep.Markdown()
+	require.NoError(t, err)
+	require.Contains(t, string(md), "Correlated: b/2@Pod/p/y")
+}
+
 func TestMarkdownNoFindings(t *testing.T) {
 	r := Build(Meta{Version: "1.0.0", Context: "dev", Lookback: "24h"}, nil, nil)
 	got, err := r.Markdown()
