@@ -54,10 +54,14 @@ type Connectors struct {
 }
 
 type LLM struct {
-	Provider                string `json:"provider"`
-	Model                   string `json:"model"`
-	MaxToolCallsPerFinding  int    `json:"maxToolCallsPerFinding"`
-	MaxFindingsInvestigated int    `json:"maxFindingsInvestigated"`
+	Provider                string   `json:"provider"`
+	Model                   string   `json:"model"`
+	APIKeyEnv               string   `json:"apiKeyEnv"`
+	BaseURL                 string   `json:"baseURL"`
+	MaxToolCallsPerGroup    int      `json:"maxToolCallsPerGroup"`
+	MaxTokensPerGroup       int      `json:"maxTokensPerGroup"`
+	MaxFindingsInvestigated int      `json:"maxFindingsInvestigated"`
+	GlobalBudget            Duration `json:"globalBudget"`
 }
 
 type Output struct {
@@ -89,8 +93,12 @@ func Default() *Config {
 		LLM: LLM{
 			Provider:                "anthropic",
 			Model:                   "claude-sonnet-5",
-			MaxToolCallsPerFinding:  6,
+			APIKeyEnv:               "POIROT_LLM_API_KEY",
+			BaseURL:                 "",
+			MaxToolCallsPerGroup:    8,
+			MaxTokensPerGroup:       40000,
 			MaxFindingsInvestigated: 15,
+			GlobalBudget:            Duration(5 * time.Minute),
 		},
 		Output: Output{Dir: "./poirot-out", FailOn: "critical"},
 	}
@@ -139,11 +147,20 @@ func (c *Config) applyDefaults() {
 	if c.LLM.Model == "" {
 		c.LLM.Model = d.LLM.Model
 	}
-	if c.LLM.MaxToolCallsPerFinding == 0 {
-		c.LLM.MaxToolCallsPerFinding = d.LLM.MaxToolCallsPerFinding
+	if c.LLM.APIKeyEnv == "" {
+		c.LLM.APIKeyEnv = d.LLM.APIKeyEnv
+	}
+	if c.LLM.MaxToolCallsPerGroup == 0 {
+		c.LLM.MaxToolCallsPerGroup = d.LLM.MaxToolCallsPerGroup
+	}
+	if c.LLM.MaxTokensPerGroup == 0 {
+		c.LLM.MaxTokensPerGroup = d.LLM.MaxTokensPerGroup
 	}
 	if c.LLM.MaxFindingsInvestigated == 0 {
 		c.LLM.MaxFindingsInvestigated = d.LLM.MaxFindingsInvestigated
+	}
+	if c.LLM.GlobalBudget == 0 {
+		c.LLM.GlobalBudget = d.LLM.GlobalBudget
 	}
 	if c.Output.Dir == "" {
 		c.Output.Dir = d.Output.Dir
@@ -172,6 +189,21 @@ func (c *Config) Validate() error {
 	}
 	if time.Duration(c.Scope.Lookback) <= 0 {
 		return fmt.Errorf("scope.lookback must be positive, got %s", time.Duration(c.Scope.Lookback))
+	}
+	if c.LLM.Provider != "none" && c.LLM.Model == "" {
+		return fmt.Errorf("llm.model is required unless llm.provider is none")
+	}
+	if time.Duration(c.LLM.GlobalBudget) <= 0 {
+		return fmt.Errorf("llm.globalBudget must be positive, got %s", time.Duration(c.LLM.GlobalBudget))
+	}
+	if c.LLM.MaxTokensPerGroup < 1000 {
+		return fmt.Errorf("llm.maxTokensPerGroup must be >= 1000, got %d", c.LLM.MaxTokensPerGroup)
+	}
+	if c.LLM.MaxToolCallsPerGroup < 1 {
+		return fmt.Errorf("llm.maxToolCallsPerGroup must be >= 1, got %d", c.LLM.MaxToolCallsPerGroup)
+	}
+	if c.LLM.MaxFindingsInvestigated < 1 {
+		return fmt.Errorf("llm.maxFindingsInvestigated must be >= 1, got %d", c.LLM.MaxFindingsInvestigated)
 	}
 	return nil
 }

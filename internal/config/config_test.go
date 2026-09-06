@@ -19,8 +19,12 @@ func TestLoadMinimalAppliesDefaults(t *testing.T) {
 	require.Equal(t, "auto", cfg.Connectors.GitOps.Mode)
 	require.Equal(t, "anthropic", cfg.LLM.Provider)
 	require.Equal(t, "claude-sonnet-5", cfg.LLM.Model)
-	require.Equal(t, 6, cfg.LLM.MaxToolCallsPerFinding)
+	require.Equal(t, "POIROT_LLM_API_KEY", cfg.LLM.APIKeyEnv)
+	require.Equal(t, "", cfg.LLM.BaseURL)
+	require.Equal(t, 8, cfg.LLM.MaxToolCallsPerGroup)
+	require.Equal(t, 40000, cfg.LLM.MaxTokensPerGroup)
 	require.Equal(t, 15, cfg.LLM.MaxFindingsInvestigated)
+	require.Equal(t, 5*time.Minute, time.Duration(cfg.LLM.GlobalBudget))
 	require.Equal(t, "./poirot-out", cfg.Output.Dir)
 	require.Equal(t, "critical", cfg.Output.FailOn)
 }
@@ -32,9 +36,34 @@ func TestLoadFullOverridesDefaults(t *testing.T) {
 	require.Equal(t, []string{"payments", "checkout"}, cfg.Scope.Namespaces)
 	require.Equal(t, 7*24*time.Hour, time.Duration(cfg.Scope.Lookback))
 	require.Equal(t, "http://prom.mon:9090", cfg.Connectors.PromQL.URL)
-	require.Equal(t, "none", cfg.LLM.Provider)
 	require.Equal(t, "warning", cfg.Output.FailOn)
 	require.Equal(t, []string{"cost"}, cfg.Focus)
+}
+
+func TestLoadFullLLMBlock(t *testing.T) {
+	cfg, err := Load("testdata/full.yaml")
+	require.NoError(t, err)
+
+	require.Equal(t, "openai-compatible", cfg.LLM.Provider)
+	require.Equal(t, "llama3.1", cfg.LLM.Model)
+	require.Equal(t, "MY_KEY", cfg.LLM.APIKeyEnv)
+	require.Equal(t, "http://localhost:11434/v1", cfg.LLM.BaseURL)
+	require.Equal(t, 4, cfg.LLM.MaxToolCallsPerGroup)
+	require.Equal(t, 20000, cfg.LLM.MaxTokensPerGroup)
+	require.Equal(t, 5, cfg.LLM.MaxFindingsInvestigated)
+	require.Equal(t, 2*time.Minute, time.Duration(cfg.LLM.GlobalBudget))
+}
+
+func TestDefaultLLMShape(t *testing.T) {
+	llm := Default().LLM
+	require.Equal(t, "anthropic", llm.Provider)
+	require.Equal(t, "claude-sonnet-5", llm.Model)
+	require.Equal(t, "POIROT_LLM_API_KEY", llm.APIKeyEnv)
+	require.Equal(t, "", llm.BaseURL)
+	require.Equal(t, 8, llm.MaxToolCallsPerGroup)
+	require.Equal(t, 40000, llm.MaxTokensPerGroup)
+	require.Equal(t, 15, llm.MaxFindingsInvestigated)
+	require.Equal(t, 5*time.Minute, time.Duration(llm.GlobalBudget))
 }
 
 func TestLoadRejectsUnknownProvider(t *testing.T) {
@@ -45,4 +74,40 @@ func TestLoadRejectsUnknownProvider(t *testing.T) {
 func TestLoadMissingFile(t *testing.T) {
 	_, err := Load("testdata/does-not-exist.yaml")
 	require.Error(t, err)
+}
+
+func TestValidateRejectsEmptyModelWithProvider(t *testing.T) {
+	cfg := Default()
+	cfg.LLM.Provider = "anthropic"
+	cfg.LLM.Model = ""
+	err := cfg.Validate()
+	require.ErrorContains(t, err, "llm.model")
+}
+
+func TestValidateRejectsZeroGlobalBudget(t *testing.T) {
+	cfg := Default()
+	cfg.LLM.GlobalBudget = 0
+	err := cfg.Validate()
+	require.ErrorContains(t, err, "globalBudget")
+}
+
+func TestValidateRejectsLowMaxTokens(t *testing.T) {
+	cfg := Default()
+	cfg.LLM.MaxTokensPerGroup = 500
+	err := cfg.Validate()
+	require.ErrorContains(t, err, "maxTokensPerGroup")
+}
+
+func TestValidateRejectsZeroMaxToolCallsPerGroup(t *testing.T) {
+	cfg := Default()
+	cfg.LLM.MaxToolCallsPerGroup = 0
+	err := cfg.Validate()
+	require.ErrorContains(t, err, "maxToolCallsPerGroup")
+}
+
+func TestValidateRejectsZeroMaxFindingsInvestigated(t *testing.T) {
+	cfg := Default()
+	cfg.LLM.MaxFindingsInvestigated = 0
+	err := cfg.Validate()
+	require.ErrorContains(t, err, "maxFindingsInvestigated")
 }
