@@ -2,7 +2,6 @@ package k8s
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -109,12 +108,4 @@ func (c *Connector) Probe(ctx context.Context) connector.Availability {
 		}
 	}
 	return connector.Availability{State: connector.StateAvailable}
-}
-
-// Capabilities returns the queryable capabilities (wired in M3).
-func (c *Connector) Capabilities() []connector.Capability { return nil }
-
-// Query is unsupported in M1.
-func (c *Connector) Query(context.Context, string, json.RawMessage) (json.RawMessage, error) {
-	return nil, fmt.Errorf("k8s connector exposes no queryable capabilities in M1")
 }
