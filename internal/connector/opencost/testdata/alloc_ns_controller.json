@@ -1,0 +1,6 @@
+{"code":200,"data":[{
+  "team/web-deploy":{"name":"team/web-deploy","properties":{"namespace":"team","controller":"web-deploy","controllerKind":"deployment"},
+    "cpuCoreRequestAverage":2.0,"cpuCoreUsageAverage":0.3,"ramByteRequestAverage":2147483648,"ramByteUsageAverage":268435456,
+    "cpuCost":40.0,"ramCost":10.0,"pvCost":0,"loadBalancerCost":0,"totalCost":50.0},
+  "team/__idle__":{"name":"team/__idle__","properties":{"namespace":"team"},"cpuCost":5,"ramCost":1,"totalCost":6}
+}]}
