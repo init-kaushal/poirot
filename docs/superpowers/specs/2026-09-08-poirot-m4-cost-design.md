@@ -71,7 +71,7 @@ internal/
   snapshot/
     snapshot.go     # + Cost *CostSet ; CostSet/WorkloadCost/NamespaceCost/CostBasis types ; + Jobs []batchv1.Job
   connector/k8s/
-    collect.go      # + Jobs list (BatchV1().Jobs(ns).List) per scoped namespace, read-only
+    collect.go      # + Jobs list (BatchV1().Jobs(ns).List) per scoped namespace, read-only, BEST-EFFORT (list error => snap.Jobs nil, run continues)
   orchestrator/
     orchestrator.go # register opencost; snap.Cost = cost.Collect(...) after metrics.Collect; analyzer list += cost.New(); rep.Meta.Cost post-Build
   report/
@@ -127,7 +127,11 @@ type NamespaceCost struct {
 }
 ```
 
-`Snapshot` also gains `Jobs []batchv1.Job` (unexported concern: `import batchv1 "k8s.io/api/batch/v1"`).
+`Snapshot` also gains `Jobs []batchv1.Job` (`import batchv1 "k8s.io/api/batch/v1"`). This list
+is **best-effort**: unlike the core workload/pod lists (whose failure aborts `k8s.Collect` and
+the whole run), a Jobs list/RBAC error leaves `snap.Jobs == nil`, logs nothing fatal, and simply
+disables `cost/retained-jobs`. A cluster whose Serviceaccount can read workloads but not Jobs
+still gets a full reliability/slo/change/cost report (review R3).
 
 ### `report` additions
 
@@ -155,8 +159,13 @@ type Sheet struct {
     Default        Rate            `yaml:"default"`
     ByInstanceType map[string]Rate `yaml:"byInstanceType"`
 }
-func Load() (*Sheet, error)                 // parses the embedded prices.yaml
-func (s *Sheet) Rate(instanceType string) Rate // exact match on ByInstanceType, else Default
+func Load() (*Sheet, error)                     // parses the embedded prices.yaml
+func (s *Sheet) Rate(instanceType string) Rate // override wins if set; else exact ByInstanceType match; else Default
+
+// SetOverride installs the connectors.opencost.rates value. When set, Rate()
+// returns it for EVERY instance type — an explicit user rate is a deliberate
+// correction and must beat the embedded guesses (review R14).
+func (s *Sheet) SetOverride(r *Rate)
 ```
 
 `prices.yaml` (approximate on-demand list prices, each instance's hourly price split ~70/30
@@ -173,7 +182,10 @@ byInstanceType:
   Standard_D4s_v5: { cpuHour: 0.0230, memGiBHour: 0.0031 }
 ```
 
-A `connectors.opencost.rates` config value overrides `Sheet.Default` (not the per-type entries).
+A `connectors.opencost.rates` config value, when set, overrides **every** lookup via
+`Sheet.SetOverride` — not just `Default`. A user who supplies explicit rates has decided the
+embedded table is wrong for their cluster; silently keeping the per-type guesses on labelled
+nodes would make the knob look inert (review R14).
 
 ## The `opencost` connector
 
@@ -183,13 +195,16 @@ A `connectors.opencost.rates` config value overrides `Sheet.Default` (not the pe
 - `Query("opencost.allocation", args)` → the raw response body as `json.RawMessage`. Parsing into
   `[]Allocation` is `parse.go`'s job, called from `cost.Collect` — identical to how `promql` returns
   raw and `metrics` parses.
-- `client.go`: `GET {base}/allocation/compute?window={window}&aggregate={aggregate}&accumulate=false`.
-  Pluggable `doer` (like `promql/client.go`), 1 MiB `io.LimitReader` cap, body-read errors surfaced.
+- `client.go`: `GET {base}/allocation/compute?window={window}&aggregate={aggregate}` plus the
+  caller-supplied `accumulate`/`step` params (see "Response shape consumed" — the 7d call sends
+  `accumulate=true`, the 14d trend call sends `accumulate=false&step=7d`). Pluggable `doer` (like
+  `promql/client.go`), 1 MiB `io.LimitReader` cap, body-read errors surfaced.
 - `discover.go`: Service `name ∈ {opencost, kubecost-cost-analyzer, cost-analyzer}` in
-  `namespace ∈ {opencost, monitoring, kubecost, kube-system}`, port `9003` (opencost) or `9090`
-  (kubecost cost-analyzer). One `Services("").List` + sort by `(namespace, name)` + first match
-  (carry-forward from the promql two-pass discovery review). Reached via
-  `Services(ns).ProxyGet(scheme, name, port, "/allocation/compute", params)`.
+  `namespace ∈ {opencost, monitoring, kubecost, kube-system}`. One `Services("").List` + sort by
+  `(namespace, name)` + first match (carry-forward from the promql two-pass discovery review).
+  **Port comes from the Service, not a constant** — reuse `promql/discover.go`'s `pickPort()`
+  logic: a port named `http`/`web`/`https`, else a well-known port (`9003`, `9090`), else the
+  sole port (review R12). Reached via `Services(ns).ProxyGet(scheme, name, port, "/allocation/compute", params)`.
 - `Probe(ctx)`:
   - `url: disabled` → `absent`, reason `"disabled in config"` (matches `promql` post-M3).
   - `url: auto` → discover; found and a probe `GET` returns 200 → `available`; not found →
@@ -207,26 +222,39 @@ A `connectors.opencost.rates` config value overrides `Sheet.Default` (not the pe
   "pvCost", "loadBalancerCost", "totalCost"
 } } ]}`
 
-`data` is an array of per-step maps. `cost.Collect` requests `accumulate=false` and, for the 7d
-call, expects a single step; for the 14d trend call it expects two 7d steps and reads
-`data[0]` (prior) and `data[1]` (recent). A row with `controllerKind == ""` (unallocated /
-idle / `__idle__`) is skipped for workload rows but still counted into `NamespaceCost`.
+`data` is an array of per-step maps. **`accumulate` and `step` matter (review R2):**
+
+- **7d workload/namespace call**: `window=7d&accumulate=true` → `data` has exactly one map,
+  the whole-week aggregate. `cost.Collect` reads `data[0]`. (Without `accumulate=true`, OpenCost
+  returns ~7 daily buckets and the week is under-counted ~7×.)
+- **14d trend call**: `window=14d&accumulate=false&step=7d` → `data` has two maps: `data[0]` =
+  prior 7d, `data[1]` = most recent 7d. `NamespaceCost.PriorMonthlyCost` from `data[0]`,
+  `MonthlyCost` from `data[1]`.
+
+A row whose `properties.controllerKind` is empty or `"__idle__"` / `"__unallocated__"` is
+skipped for workload rows but still summed into `NamespaceCost`. **`controllerKind` from
+OpenCost is lowercase** (`deployment`, `statefulset`, `daemonset`); the join to `snap`
+(next section) normalises case (review R4).
 
 ## `internal/cost` — collection & estimation
 
 ### `Collect(ctx, snap *snapshot.Snapshot, reg *connector.Registry, spec config.ConnectorSpec) *snapshot.CostSet`
 
 1. **Measured path** — `reg.Satisfied(["opencost"])` true:
-   - Call `opencost.allocation` with `aggregate=namespace,controller`, `window=7d` → `Workloads`.
-   - Call `opencost.allocation` with `aggregate=namespace`, `window=14d` → `Namespaces` (recent +
-     prior).
-   - Join `Workloads` to `snap` by `(namespace, controllerKind, controller)` to fill `Replicas`
-     from the live object; drop allocation rows with no matching workload in scope.
+   - Call `opencost.allocation` with `aggregate=namespace,controller`, `window=7d&accumulate=true`
+     → `Workloads`.
+   - Call `opencost.allocation` with `aggregate=namespace`, `window=14d&accumulate=false&step=7d`
+     → `Namespaces` (`data[0]` prior, `data[1]` recent).
+   - Join `Workloads` to `snap` by `namespace`, `controller` name, and **case-folded**
+     `controllerKind` (`strings.EqualFold` — OpenCost sends `deployment`, the snapshot has
+     `Deployment`; review R4). Fill `Replicas` from the matched live object; drop allocation rows
+     with no matching workload in scope.
    - `Basis: measured`, `Source: opencost`, `Currency` from the response (`"USD"` default).
    - Any query error → append to `CostSet.Note`, then fall through to the estimate path (the
      partial measured data is discarded to avoid a mixed set).
-2. **Estimate path** — measured unavailable and `spec.EstimateFallback` true: `estimate.go`.
-3. **Skip** — measured unavailable and `spec.EstimateFallback` false, or `pricesheet.Load()`
+2. **Estimate path** — measured unavailable and `*spec.EstimateFallback` (the `*bool` resolves to
+   `true` by default): `estimate.go`.
+3. **Skip** — measured unavailable and `*spec.EstimateFallback` is `false`, or `pricesheet.Load()`
    errored: return `nil`.
 
 Every slice in the returned `CostSet` is sorted (`Workloads` by `(namespace, kind, name)`,
@@ -236,25 +264,35 @@ Every slice in the returned `CostSet` is sorted (`Workloads` by `(namespace, kin
 
 For each workload in `snap` (`Deployments`, `StatefulSets`, `DaemonSets`; `Kind` set accordingly):
 
-- `CPURequestCores` = Σ over the pod template's containers of `resources.requests.cpu`,
-  `MemRequestBytes` likewise, each × `spec.replicas` (`1` for DaemonSets is replaced by the
-  count of ready nodes in scope).
+- **Replica count** (`WorkloadCost.Replicas`):
+  - Deployment / StatefulSet → `spec.replicas` (default `1`).
+  - DaemonSet → **the count of the DaemonSet's own running pods in scope**, not the ready-node
+    count. A DaemonSet with a `nodeSelector`/affinity/taint toleration runs on a subset of nodes;
+    node-count would over-cost it many-fold and could wrongly trip `cost/rightsizing`
+    (review R11). The pod enumeration below already produces this number.
+- `CPURequestCores` = Σ over the pod template's containers of `resources.requests.cpu`
+  × `Replicas`; `MemRequestBytes` likewise.
 - **Instance type**: for each of the workload's *running* pods, `pod.spec.nodeName` → node's
   `node.kubernetes.io/instance-type` (or the older `beta.kubernetes.io/instance-type`) label.
-  Use the modal value across those pods. If the workload has no running pods, use the cluster's
-  modal instance-type. If no node carries the label, use `Sheet.Default` and set `CostSet.Note`
-  to `"no instance-type labels found; using blended default rate"`.
-- `rate = sheet.Rate(instanceType)` (or the `connectors.opencost.rates` override for the default).
+  Take the most frequent value; **on a tie, the lexicographically smallest instance-type string**
+  (deterministic — a bare argmax over a Go map is iteration-order dependent and would flake
+  `TestCostCollectDeterministic`; review R9). If the workload has no running pods, use the
+  cluster's modal instance-type (same tie-break). If no node carries the label, use
+  `Sheet.Default` and set `CostSet.Note` to `"no instance-type labels found; using blended default rate"`.
+- `rate = sheet.Rate(instanceType)` (`Sheet` already carries the `connectors.opencost.rates`
+  override via `SetOverride`, which wins for every type).
   `MonthlyCPUCost = CPURequestCores * rate.CPUHour * 730`,
   `MonthlyMemCost = MemRequestBytes / (1<<30) * rate.MemGiBHour * 730`,
   `MonthlyCost = MonthlyCPUCost + MonthlyMemCost` (PV/LB dollars are `0` on this path).
-- **Usage**: if `reg.Satisfied(["promql"])`, issue one dedicated instant query pair via the
-  registered `promql` connector —
-  `sum by (namespace, owner_name) (rate(container_cpu_usage_seconds_total{...}[7d]))` and the
-  working-set equivalent, joined to the workload via the standard `kube_pod_owner` /
-  owner-reference chain — and fill `CPUUsageCores` / `MemUsageBytes`. On query error or no
-  `promql`, set both to `-1` and append `"usage unavailable — rightsizing limited to requests vs limits"`
-  to `CostSet.Note`.
+- **Usage**: if `reg.Satisfied(["promql"])`, issue dedicated instant queries via the registered
+  `promql` connector and fill `CPUUsageCores` / `MemUsageBytes`. The owner join is **two-hop for
+  Deployments** (review R7): kube-state-metrics reports Deployment pods as
+  `kube_pod_owner{owner_kind="ReplicaSet", owner_name="<deploy>-<hash>"}`, so match on the
+  pod-template-hash-stripped name —
+  `label_replace(kube_pod_owner{owner_kind="ReplicaSet"}, "workload", "$1", "owner_name", "^(.*)-[0-9a-f]{6,10}$")`
+  joined to `kube_replicaset_owner` for the Deployment name; StatefulSets/DaemonSets join
+  `owner_name` directly. On query error or no `promql`, set both usage fields to `-1` and append
+  `"usage unavailable — rightsizing limited to requests vs limits"` to `CostSet.Note`.
 - `NamespaceCost.MonthlyCost` = Σ workload cost in the namespace; `PriorMonthlyCost = -1`
   (no history on this path).
 - `Basis: estimated`, `Source: estimate`.
@@ -276,28 +314,51 @@ Every non-skipped finding: `Domain = "cost"`, `Object` = the workload / namespac
 `ObjectRef`, and an `Evidence` entry `{Name:"basis", Detail: string(snap.Cost.Basis)}`. Dollar
 evidence values use `Evidence.Value` (float) with `Name` ending `MonthlyCost` / `MonthlySaving`.
 
+**No non-finite evidence (review R1).** `report.JSON()` uses `json.MarshalIndent`, which rejects
+`+Inf`/`-Inf`/`NaN`, and `writeOutputs` treats that error as fatal — a single bad ratio would
+suppress the entire `report.json`/`report.md` for an otherwise-successful run (the same failure
+`promql/parse.go` already guards). Every rule computes ratios through a shared helper
+`safeRatio(num, den float64) (v float64, ok bool)` that returns `ok=false` when `den == 0` or
+the result is non-finite; a rule that can't form its ratio either omits that evidence value or
+does not fire. No `Evidence.Value` is ever `±Inf`/`NaN`.
+
+**Rule evaluation order (review R6).** `Analyze` runs in two passes so cross-rule suppression is
+well-defined:
+1. Pass 1 evaluates `cost/over-replicated` and `cost/idle` and records the set of workload keys
+   each fired on.
+2. Pass 2 evaluates `cost/rightsizing`, skipping any workload already in the `over-replicated`
+   set (replica reduction is the blunter, safer fix; emitting both would double-count the same
+   waste in `EstimatedMonthlyWaste`).
+3. The k8s-only rules (`cost/orphaned-*`, `cost/retained-jobs`) and `cost/namespace-spend-trend`
+   are order-independent.
+
 ### `cost/rightsizing`
 
 - **Skip condition**: if *no* workload has usage (`CPUUsageCores < 0` everywhere), emit **one**
-  run-wide `Finding{RuleID:"cost/rightsizing-limited", Severity:info,
-  Summary:"rightsizing needs usage data — deploy OpenCost or Prometheus"}` and run no per-workload
-  rightsizing.
-- **Per workload**, when `CPUUsageCores >= 0` and requests are set:
-  - `cpuUtil = CPUUsageCores / CPURequestCores`, `memUtil = MemUsageBytes / MemRequestBytes`
-    (a `0` request → that dimension's util is treated as `+inf`, i.e. never a rightsizing target).
-  - Fire when `max(cpuUtil, memUtil) < 0.5` **and** `MonthlyCost >= 5`.
-  - `suggestedCpuRequest = max(CPUUsageCores * 1.3, 0.010)`,
-    `suggestedMemRequest = max(MemUsageBytes * 1.3, 16*1<<20)`.
-  - `estimatedMonthlySaving = MonthlyCPUCost * (1 - suggestedCpuRequest/CPURequestCores)`
-    `+ MonthlyMemCost * (1 - suggestedMemRequest/MemRequestBytes)`, clamped `>= 0`.
+  run-wide `Finding{RuleID:"cost/rightsizing-limited", Domain:"cost", Severity:info,
+  Object: analyzer.ObjectRef{Kind:"Cluster"}, Summary:"rightsizing needs usage data — deploy OpenCost or Prometheus"}`
+  and run no per-workload rightsizing. (An explicit `Object` — not the zero value, which renders
+  as `— /` and sorts on an empty key; review R15.)
+- **Per workload** (skipped if in the `over-replicated` set): evaluate each dimension
+  **independently** — a workload with only a memory request set must still be flagged for a
+  bloated memory request (review R8):
+  - CPU dimension considered only when `CPURequestCores > 0` and `CPUUsageCores >= 0`;
+    `cpuUtil = CPUUsageCores / CPURequestCores`; "over-provisioned" when `cpuUtil < 0.5`.
+  - Mem dimension likewise with `MemRequestBytes`/`MemUsageBytes`.
+  - Fire when **at least one** considered dimension is over-provisioned **and** `MonthlyCost >= 5`.
+  - `suggestedCpuRequest = max(CPUUsageCores * 1.3, 0.010)` (only when the CPU dimension fired;
+    otherwise keep the current request). `suggestedMemRequest = max(MemUsageBytes * 1.3, 16*1<<20)`
+    likewise.
+  - `estimatedMonthlySaving = MonthlyCPUCost * clamp01(1 - suggestedCpuRequest/CPURequestCores)`
+    `+ MonthlyMemCost * clamp01(1 - suggestedMemRequest/MemRequestBytes)` — each term `0` when
+    that dimension didn't fire or its request is `0` (via `safeRatio`).
   - `Severity` = `warning` if `estimatedMonthlySaving >= 20`, else `info`.
   - Evidence: `cpuRequestCores`, `cpuUsageCores`, `memRequestBytes`, `memUsageBytes`,
     `suggestedCpuRequest`, `suggestedMemRequest`, `estimatedMonthlySaving`, `basis`.
-  - `Summary`: `"<kind>/<name> uses <cpuUtil%>/<memUtil%> of its cpu/mem requests"`.
-  - Remediation (in `Summary` or a dedicated evidence line — deterministic string):
+  - `Summary`: `"<kind>/<name> uses <cpuUtil%>/<memUtil%> of its cpu/mem requests"` (a dimension
+    with no request renders as `n/a`).
+  - Remediation (dedicated deterministic evidence line):
     `"Set requests cpu=<X> mem=<Y> (usage ×1.3); saves ~$<Z>/mo"`.
-- **Precedence**: a workload that also triggers `cost/over-replicated` is *excluded* here
-  (replica reduction is the blunter, safer fix and would otherwise double-count).
 
 ### `cost/idle`
 
@@ -306,20 +367,24 @@ evidence values use `Evidence.Value` (float) with `Name` ending `MonthlyCost` / 
   If `promql` traffic data is available and shows a non-trivial request rate, do **not** fire
   (it is serving something).
 - `Severity` = `warning` if `MonthlyCost >= 20`, else `info`.
-- Evidence: `cpuUsageCores`, `replicas`, `monthlyCost`, `hasHPA` (true when an HPA in the
-  snapshot targets this workload), `basis`.
+- Evidence: `cpuUsageCores`, `replicas`, `monthlyCost`, **`estimatedMonthlySaving` = `MonthlyCost`**
+  (scaling an idle workload to zero frees its whole cost — this is also the key the `## Cost`
+  top-5 sorts on; review R13), `hasHPA` (true when an HPA in the snapshot targets this workload),
+  `basis`.
 - `Summary`: `"<kind>/<name> runs <replicas> replica(s) at ~<mCPU>m CPU — effectively idle"`.
 - Remediation: `"Scale to zero (KEDA/Knative) or delete if unused; frees ~$<Z>/mo"`.
 
-### `cost/orphaned-pvc` and `cost/unbound-pvc`
+### `cost/orphaned-pvc`
 
-- `cost/orphaned-pvc`: PVC `status.phase == "Bound"`, **no** Pod in `snap.Pods` references it via
+- PVC `status.phase == "Bound"`, **no** Pod in `snap.Pods` references it via
   `spec.volumes[].persistentVolumeClaim.claimName`, and PVC age `> 7d`. `Severity: warning`.
   Evidence: `capacityBytes`, `storageClass`, `ageDays`,
   `estimatedMonthlyCost` (OpenCost `pvCost` for that claim if `basis==measured`, else
   `capacityGiB * 0.10`), `basis`.
-- `cost/unbound-pvc`: PVC `status.phase == "Pending"` for `> 1h`. `Severity: info`.
-  Evidence: `ageHours`, `storageClass`.
+- **No `cost/unbound-pvc` rule** — `reliability` already fires `reliability/pvc-unbound`
+  (`SeverityWarning`) for every non-`Bound` PVC, so a cost-domain `info` twin would be pure
+  duplicate noise with no dollar value attached (review R10). A `Pending` PVC costs nothing;
+  M4 stays silent on it.
 
 ### `cost/orphaned-lb`
 
@@ -342,10 +407,13 @@ evidence values use `Evidence.Value` (float) with `Name` ending `MonthlyCost` / 
 ### `cost/namespace-spend-trend`
 
 - **measured only** (`NamespaceCost.PriorMonthlyCost >= 0`). Fire when
-  `MonthlyCost > PriorMonthlyCost * 1.25` **and** `MonthlyCost - PriorMonthlyCost >= 50`.
+  `MonthlyCost - PriorMonthlyCost >= 50` **and** (`PriorMonthlyCost == 0` **or**
+  `MonthlyCost > PriorMonthlyCost * 1.25`). The `PriorMonthlyCost == 0` branch handles a
+  brand-new namespace without dividing by zero.
 - `Severity` = `warning` if `(MonthlyCost - PriorMonthlyCost) >= 200`, else `info`.
-- `Object = ObjectRef{Kind:"Namespace", Name:<ns>}`. Evidence: `monthlyCost`,
-  `priorMonthlyCost`, `deltaPct`, `deltaAbs`, `basis`.
+- `Object = ObjectRef{Kind:"Namespace", Name:<ns>}`. Evidence: `monthlyCost`, `priorMonthlyCost`,
+  `deltaAbs`, and `deltaPct` **only when `safeRatio(deltaAbs, priorMonthlyCost)` succeeds**
+  (omitted entirely when prior is `0` — never `+Inf`; review R1), `basis`.
 - Silently absent on the estimate path.
 
 ### `cost/over-replicated`
@@ -399,35 +467,45 @@ Estimated monthly spend: $4,213.55 · estimated waste: $921.40 (22%) · window: 
 ```
 
 - The spend/waste line always renders; the `>` banner only when `basis != "measured"`.
-- Top-5 rows = the five `cost/*` findings with the highest `estimatedMonthlySaving` /
-  `estimatedMonthlyCost` evidence value, ordered `(value desc, ruleID asc, object asc)`.
+- Top-5 rows: define `savings(f)` = `f`'s `estimatedMonthlySaving` evidence value if present,
+  else its `estimatedMonthlyCost` value, else `0`. Every rule that lands in the table carries one
+  of those keys — `cost/rightsizing`, `cost/idle` (`= monthlyCost`), `cost/over-replicated`
+  carry `estimatedMonthlySaving`; `cost/orphaned-pvc`, `cost/orphaned-lb` carry
+  `estimatedMonthlyCost` (review R13). Take the 5 highest `savings(f)`, ordered
+  `(savings desc, ruleID asc, objectRef.String() asc)`. `cost/retained-jobs` and
+  `cost/namespace-spend-trend` (no per-object dollar) are excluded from the table but still
+  appear under `## Findings`.
 - `{{if .Cost}}` guard; `golden_basic.md` (no cost data) stays byte-identical.
 
 ## Configuration
 
-`connectors.opencost` (already parsed since M1 as `ConnectorSpec{URL, Mode, EstimateFallback}`):
+`connectors.opencost` (parsed since M1 as `ConnectorSpec{URL, Mode, EstimateFallback}`):
 
 ```yaml
 connectors:
   opencost:
-    url: auto              # auto | disabled | http(s)://…
-    estimateFallback: true # when false and OpenCost is absent, emit cost/skipped instead of estimating
-    rates:                 # optional flat override for the estimator's default rate
+    url: auto               # auto | disabled | http(s)://…
+    estimateFallback: true   # when false and OpenCost is absent, emit cost/skipped instead of estimating
+    rates:                   # optional flat override — wins for every node type when set
       cpuHour: 0.031
       memGiBHour: 0.004
 ```
 
-- `ConnectorSpec` gains `Rates *config.Rate` (`{CPUHour, MemGiBHour float64}`), `json:"rates,omitempty"`.
+- **`ConnectorSpec.EstimateFallback` changes from `bool` to `*bool`** (review R5). A plain `bool`
+  can't tell `estimateFallback: false` from an omitted key — both unmarshal to `false` — so the
+  M1 code hacked around it with a `URL=="auto"` check. With `*bool`: `applyDefaults` sets it to
+  `ptr(true)` **only when nil**; an explicit `false` is preserved; rules read `*spec.EstimateFallback`.
+  M1's `URL=="auto"` special-case in `applyDefaults` is deleted.
+- `ConnectorSpec` also gains `Rates *config.Rate` (`{CPUHour, MemGiBHour float64}`),
+  `json:"rates,omitempty"`.
 - `Validate`: `connectors.opencost.url` gets the same switch M3 added for `promql.url`
   (`auto` | `disabled` | `http://…` | `https://…`, else error). If `rates` is set, both
   `cpuHour > 0` and `memGiBHour > 0`, else
   `"connectors.opencost.rates.{cpuHour,memGiBHour} must be positive"`.
-- `applyDefaults`: replace the muddled M1 `EstimateFallback` block with a clear rule — when the
-  `opencost` block is omitted entirely, `Default()` supplies `{URL:"auto", EstimateFallback:true}`;
-  a user-written block takes the user's values verbatim, and `EstimateFallback` defaults to
-  `true` only when the key is absent from an otherwise-present block (documented in
-  `poirot.example.yaml`).
-- `poirot.example.yaml` + `internal/config/testdata/full.yaml` updated.
+- `Default()` supplies `OpenCost: {URL:"auto", EstimateFallback: ptr(true)}`.
+- `poirot.example.yaml` + `internal/config/testdata/full.yaml` updated. Config tests cover:
+  omitted block → `EstimateFallback` true; `estimateFallback: false` written → stays false
+  through `Load`; `"Auto"` → url error; `rates: {cpuHour: 0}` → rates error.
 
 ## Determinism
 
@@ -437,6 +515,12 @@ connectors:
   can reach a finding.
 - **Non-deterministic, demarcated**: dollar *values* in cost evidence and the whole
   `report.Meta.Cost` block — identical treatment to `slo` metric values and `report.Meta.LLM`.
+- **Two specific determinism hazards this design closes** (both from review): the estimator's
+  instance-type selection is an argmax over a `map[string]int` frequency table — it MUST
+  tie-break on the smallest instance-type string, never rely on map iteration order (R9); and
+  no `Evidence.Value` may be `±Inf`/`NaN` — every ratio goes through `safeRatio` — because
+  `report.JSON()` (`json.MarshalIndent`) rejects non-finite floats and `writeOutputs` makes that
+  fatal for the whole report (R1).
 - `TestBuildOutputIsByteStable` / `TestReportSortingIgnoresAnalysis` build from fixed findings
   and are unaffected.
 - New `TestCostCollectDeterministic`: a frozen OpenCost fixture + a frozen snapshot → the
@@ -450,11 +534,13 @@ Best-effort throughout; the cost phase never aborts a run and never returns an e
 
 | Failure | Behaviour |
 |---|---|
-| OpenCost query error / timeout | note in `CostSet.Note`, discard partial measured data, fall to estimate (or `nil` if `estimateFallback:false`) |
+| OpenCost query error / timeout | note in `CostSet.Note`, discard partial measured data, fall to estimate (or `nil` if `estimateFallback` is `false`) |
 | `pricesheet.Load()` error | `cost.Collect` returns `nil` → analyzer emits `cost/skipped` with a price-sheet note |
 | No nodes / no instance-type label | `Sheet.Default` for all workloads, `CostSet.Note` records it |
 | promql usage sub-query error / no promql | `CPUUsageCores` / `MemUsageBytes` = `-1`; rightsizing degrades to the run-wide `cost/rightsizing-limited` info finding |
+| Jobs list / RBAC error | `snap.Jobs == nil`; `cost/retained-jobs` skipped; **run continues** (Jobs list is best-effort, R3) |
 | Single malformed allocation row | skip the row, continue |
+| A ratio would be non-finite (`den == 0`) | `safeRatio` returns `ok=false`; the evidence value is omitted or the rule doesn't fire — never emitted as `±Inf` (R1) |
 | `context` cancelled mid-collect | return whatever `CostSet` is built so far (or `nil`); never partial-panic |
 
 ## Testing
@@ -465,22 +551,32 @@ Best-effort throughout; the cost phase never aborts a run and never returns an e
   connector tests.
 - `cost/estimate_test.go`: table-driven — fixture snapshots (workloads with known requests +
   node instance-types) → assert every `WorkloadCost` field against hand-computed values;
-  usage-present and usage-absent variants; no-instance-type-label variant.
+  usage-present and usage-absent variants; no-instance-type-label variant; **tie-break variant**
+  (pods split 50/50 across two instance-types → the lexicographically-smaller type is chosen,
+  asserted stable across repeated runs; R9); **targeted-DaemonSet variant** (DS with a
+  `nodeSelector` on 2 of 5 nodes → `Replicas == 2`, not `5`; R11); **Deployment usage-join
+  variant** (pods owned by a `-<hash>` ReplicaSet → usage still lands on the Deployment; R7).
 - `cost/collect_test.go`: fake `connector.Registry` with/without `opencost`, with/without
   `promql` → assert `Basis` / `Source` / `Note`; assert it never returns a value that makes
-  `Run` error; `estimateFallback:false` → `nil`.
-- `cost/pricesheet_test.go`: exact instance-type match, `Default` fallback, config `rates`
-  override, malformed embed (build-tag or a parse test on a bad literal).
+  `Run` error; `estimateFallback` `false` (`*bool`) → `nil`; a measured fixture with lowercase
+  `controllerKind` still joins every workload (R4).
+- `cost/pricesheet_test.go`: exact instance-type match, `Default` fallback, **`SetOverride`
+  wins over a matching `ByInstanceType` entry** (R14), malformed embed (a parse test on a bad
+  literal).
 - `analyzer/cost/rules_test.go`: **one focused unit test per rule** — `cost/rightsizing`
-  (fires, and does not fire at util `0.51`; `rightsizing-limited` when no usage),
-  `cost/idle` (fires; not for DaemonSets; not when traffic present), `cost/orphaned-pvc`
-  (bound + unreferenced + old; not when a pod mounts it), `cost/unbound-pvc`, `cost/orphaned-lb`
-  (no ready backends; not when a ready pod matches the selector), `cost/retained-jobs`
-  (per-namespace count; not when `ttlSecondsAfterFinished` set), `cost/namespace-spend-trend`
-  (measured only; fires at +26%/$60; not at +10%), `cost/over-replicated` (fires; suppresses
-  `cost/rightsizing` for the same workload; not when an HPA targets it). Each test uses values
-  shaped as OpenCost / the estimator actually produce — explicitly per the M2 lesson (`slo` had
-  no per-rule tests, which hid two Critical bugs).
+  (fires; does not fire at util `0.51`; **fires on the mem dimension when CPU request is unset**,
+  R8; `rightsizing-limited` carries `Object{Kind:"Cluster"}` when no usage, R15),
+  `cost/idle` (fires; not for DaemonSets; not when traffic present; carries `estimatedMonthlySaving`),
+  `cost/orphaned-pvc` (bound + unreferenced + old; not when a pod mounts it),
+  `cost/orphaned-lb` (no ready backends; not when a ready pod matches the selector; not for an
+  empty-selector Service), `cost/retained-jobs` (per-namespace count; not when
+  `ttlSecondsAfterFinished` set; **absent, not erroring, when `snap.Jobs == nil`**, R3),
+  `cost/namespace-spend-trend` (measured only; fires at +26%/$60; not at +10%; **`priorMonthlyCost == 0`
+  → fires on abs delta with NO `deltaPct` evidence and no `+Inf`**, R1),
+  `cost/over-replicated` (fires; **evaluated in pass 1 so it suppresses `cost/rightsizing` for the
+  same workload**, R6; not when an HPA targets it). Each test uses values shaped as OpenCost /
+  the estimator actually produce — explicitly per the M2 lesson (`slo` had no per-rule tests,
+  which hid two Critical bugs).
 - `analyzer/cost/cost_test.go`: `Requires() == ["k8s"]`; nil `snap.Cost` → single
   `cost/skipped`; `TestAnalyzeRunsAllRules` asserts each rule id is reachable.
 - `orchestrator/orchestrator_test.go`: extend the e2e — fake cluster + fake `opencost` connector
@@ -489,7 +585,12 @@ Best-effort throughout; the cost phase never aborts a run and never returns an e
 - `report/markdown_test.go`: `## Cost` renders with the banner when estimated, without when
   measured, top-5 ordering; `golden_basic.md` byte-identical.
 - `config/config_test.go`: `opencost.url` switch (`"Auto"` → error), `rates` positivity,
-  `applyDefaults` for omitted vs partial `opencost` block.
+  `EstimateFallback *bool` — omitted block → `true`, explicit `estimateFallback: false` → stays
+  `false` after `Load` (R5).
+- `connector/k8s/collect_test.go`: a reactor that fails `jobs` `list` → `Collect` still returns
+  a snapshot (core lists succeed), `snap.Jobs == nil` (R3).
+- `connector/opencost/client_test.go`: the request URL for the 7d call carries `accumulate=true`;
+  the 14d call carries `accumulate=false&step=7d` (R2).
 
 ## Milestone boundary
 
@@ -512,3 +613,14 @@ Later milestones (unchanged): M5 alertmanager + argocd/flux gitops; M6 CronJob/R
    limitation in the finding evidence.
 3. **`730` vs `720` hours/month** — this spec uses `730` (365×24/12). Trivial, fixed here for
    consistency across estimator and `costmeta`.
+
+## Review history
+
+- **2026-09-08, `/code-review max`** on the first spec draft: 15 findings (R1–R15), all folded
+  in above and tagged inline. The load-bearing ones: R1 non-finite `Evidence.Value` aborts the
+  whole report (→ `safeRatio`, no `deltaPct` when prior is 0); R2 OpenCost `accumulate`/`step`
+  params (daily buckets vs the intended weekly aggregate); R3 Jobs list must be best-effort so a
+  Jobs RBAC gap can't kill the assessment; R4 case-fold the `controllerKind` join; R5
+  `EstimateFallback` → `*bool`; R6 two-pass rule evaluation for `over-replicated` → `rightsizing`
+  suppression; R7 two-hop promql owner join for Deployments; R8 per-dimension rightsizing; R9
+  deterministic instance-type tie-break.
