@@ -3,8 +3,13 @@ package cost
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/init-kaushal/poirot/internal/analyzer"
 	"github.com/init-kaushal/poirot/internal/snapshot"
@@ -60,6 +65,57 @@ func TestOverReplicatedSuppressesRightsizing(t *testing.T) { // spec R6
 	ids := ruleIDs(out)
 	require.Contains(t, ids, "cost/over-replicated")
 	require.NotContains(t, ids, "cost/rightsizing")
+}
+
+func TestAnalyzeRunsAllRules(t *testing.T) {
+	old := metav1.NewTime(time.Now().Add(-8 * 24 * time.Hour))
+	snap := &snapshot.Snapshot{
+		Cost: &snapshot.CostSet{
+			Basis: snapshot.CostMeasured,
+			Workloads: []snapshot.WorkloadCost{
+				// wide + idle → idle + over-replicated
+				{Namespace: "t", Kind: "Deployment", Name: "big", Replicas: 8,
+					CPURequestCores: 8, CPUUsageCores: 0.03, MemRequestBytes: 8 << 30, MemUsageBytes: 1 << 30,
+					MonthlyCost: 400, MonthlyCPUCost: 300, MonthlyMemCost: 100},
+				// small + over-provisioned → rightsizing
+				{Namespace: "t", Kind: "Deployment", Name: "small", Replicas: 1,
+					CPURequestCores: 1, CPUUsageCores: 0.1, MemRequestBytes: 1 << 30, MemUsageBytes: 1 << 27,
+					MonthlyCost: 50, MonthlyCPUCost: 40, MonthlyMemCost: 10},
+			},
+			Namespaces: []snapshot.NamespaceCost{
+				{Namespace: "t", MonthlyCost: 300, PriorMonthlyCost: 100},
+			},
+		},
+		PVCs: []corev1.PersistentVolumeClaim{{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "t", Name: "orphan", CreationTimestamp: old},
+			Status: corev1.PersistentVolumeClaimStatus{
+				Phase:    corev1.ClaimBound,
+				Capacity: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
+			},
+		}},
+		Services: []corev1.Service{{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "t", Name: "lb"},
+			Spec: corev1.ServiceSpec{
+				Type:     corev1.ServiceTypeLoadBalancer,
+				Selector: map[string]string{"app": "gone"},
+			},
+		}},
+		Jobs: []batchv1.Job{{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "t", Name: "j"},
+			Status:     batchv1.JobStatus{Succeeded: 1, CompletionTime: &old},
+		}},
+	}
+
+	out, err := New().Analyze(context.Background(), snap)
+	require.NoError(t, err)
+	ids := ruleIDs(out)
+	for _, want := range []string{
+		"cost/rightsizing", "cost/idle", "cost/over-replicated",
+		"cost/orphaned-pvc", "cost/orphaned-lb", "cost/retained-jobs",
+		"cost/namespace-spend-trend",
+	} {
+		require.Contains(t, ids, want)
+	}
 }
 
 func TestSafeRatio(t *testing.T) {

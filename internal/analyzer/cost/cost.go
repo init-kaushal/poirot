@@ -58,7 +58,10 @@ func (a *Analyzer) Analyze(_ context.Context, snap *snapshot.Snapshot) ([]analyz
 			}
 		}
 	}
-	// T12 appends the object rules here.
+	out = append(out, checkOrphanedPVC(snap, cs.Basis)...)
+	out = append(out, checkOrphanedLB(snap, cs.Basis)...)
+	out = append(out, checkRetainedJobs(snap)...)
+	out = append(out, checkNamespaceSpendTrend(cs)...)
 	return out, nil
 }
 
