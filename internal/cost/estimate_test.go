@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 func TestEstimateWorkloadCostFromRequests(t *testing.T) {
@@ -109,6 +111,56 @@ func TestEstimateUsageErrorFallsToMinusOne(t *testing.T) {
 	require.Equal(t, -1.0, cs.Workloads[0].CPUUsageCores)
 	require.Equal(t, -1.0, cs.Workloads[0].MemUsageBytes)
 	require.Contains(t, cs.Note, "usage unavailable")
+}
+
+func TestEstimateUnmatchedWorkloadStaysMinusOneOnUsageSuccess(t *testing.T) {
+	reg := connector.NewRegistry()
+	// promql answers, but only for workload "web" — "api" gets no sample.
+	reg.Register(fakePromql{samples: map[string][]snapshot.MetricSample{
+		"promql.instant/cpu": {{Labels: map[string]string{"namespace": "t", "workload": "web"}, Value: 0.4}},
+		"promql.instant/mem": {{Labels: map[string]string{"namespace": "t", "workload": "web"}, Value: 1 << 20}},
+	}})
+	reg.Probe(context.Background())
+	snap := &snapshot.Snapshot{
+		Meta:  snapshot.Meta{CollectedAt: time.Unix(0, 0).UTC()},
+		Nodes: []corev1.Node{node("n", "m6i.large")},
+		Pods: []corev1.Pod{
+			runningPod("t", "web-x", "n", ctrlRef("Deployment", "t", "web")),
+			runningPod("t", "api-x", "n", ctrlRef("Deployment", "t", "api")),
+		},
+		Deployments: []appsv1.Deployment{deploy("t", "web", 1, "1", "1Gi"), deploy("t", "api", 1, "1", "1Gi")},
+	}
+	cs := Estimate(context.Background(), snap, reg, mustSheet(t))
+	byName := map[string]snapshot.WorkloadCost{}
+	for _, w := range cs.Workloads {
+		byName[w.Name] = w
+	}
+	require.InDelta(t, 0.4, byName["web"].CPUUsageCores, 1e-9)
+	require.Equal(t, -1.0, byName["api"].CPUUsageCores) // no sample → unknown, NOT 0
+	require.Equal(t, -1.0, byName["api"].MemUsageBytes)
+}
+
+func TestEstimateDeploymentInstanceTypeViaReplicaSet(t *testing.T) {
+	rsRef := ctrlRef("Deployment", "t", "web") // the RS is owned by the Deployment
+	rs := appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "t", Name: "web-abc123", UID: types.UID("rs/web-abc123"),
+		OwnerReferences: []metav1.OwnerReference{rsRef}}}
+	podRef := metav1.OwnerReference{Kind: "ReplicaSet", Name: "web-abc123",
+		UID: types.UID("rs/web-abc123"), Controller: ptr(true)}
+	snap := &snapshot.Snapshot{
+		Meta:        snapshot.Meta{CollectedAt: time.Unix(0, 0).UTC()},
+		Nodes:       []corev1.Node{node("big", "r6i.large"), node("small", "m6i.large")},
+		ReplicaSets: []appsv1.ReplicaSet{rs},
+		Pods: []corev1.Pod{
+			runningPod("t", "web-abc123-1", "big", podRef),
+			runningPod("t", "web-abc123-2", "big", podRef), // 2 on r6i → modal r6i
+			runningPod("t", "web-abc123-3", "small", podRef),
+		},
+		Deployments: []appsv1.Deployment{deploy("t", "web", 3, "1", "1Gi")},
+	}
+	cs := Estimate(context.Background(), snap, nil, mustSheet(t))
+	// r6i.large cpuHour is 0.0165; if it fell back to cluster-modal (m6i, 0.0210) this would differ
+	require.InDelta(t, 3*0.0165*730, cs.Workloads[0].MonthlyCPUCost, 1e-3)
 }
 
 // fakePromql is a minimal connector.Connector for the usage path.

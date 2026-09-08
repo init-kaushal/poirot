@@ -74,7 +74,7 @@ func Estimate(ctx context.Context, snap *snapshot.Snapshot, reg *connector.Regis
 	missingInstanceType := false
 
 	for _, sp := range specs {
-		running := runningPodsOf(snap, sp.uid)
+		running := runningPodsOf(snap, sp.kind, sp.uid)
 
 		var replicas int32
 		switch {
@@ -114,6 +114,11 @@ func Estimate(ctx context.Context, snap *snapshot.Snapshot, reg *connector.Regis
 			MonthlyCost:     cpuCost + memCost,
 			MonthlyCPUCost:  cpuCost,
 			MonthlyMemCost:  memCost,
+			// "unknown" until a PromQL sample raises it; fillUsage only ever
+			// lifts a matched workload to its real value, so an unmatched one
+			// must not read as measured-as-zero.
+			CPUUsageCores: -1,
+			MemUsageBytes: -1,
 		})
 	}
 
@@ -215,15 +220,27 @@ func collectWorkloadSpecs(snap *snapshot.Snapshot) []wlSpec {
 	return out
 }
 
-// runningPodsOf returns the Running pods whose controller UID matches uid.
-func runningPodsOf(snap *snapshot.Snapshot, uid string) []corev1.Pod {
+// runningPodsOf returns the Running pods controlled by the workload uid.
+// Deployment pods are owned by a ReplicaSet, not the Deployment, so for that
+// kind we first collect the UIDs of ReplicaSets the Deployment controls and
+// match pods against that set. StatefulSet/DaemonSet keep the direct-UID match.
+func runningPodsOf(snap *snapshot.Snapshot, kind, uid string) []corev1.Pod {
+	owners := map[string]bool{uid: true}
+	if kind == "Deployment" {
+		for i := range snap.ReplicaSets {
+			rs := &snap.ReplicaSets[i]
+			if c := metav1.GetControllerOf(rs); c != nil && string(c.UID) == uid {
+				owners[string(rs.UID)] = true
+			}
+		}
+	}
 	var out []corev1.Pod
 	for i := range snap.Pods {
 		p := &snap.Pods[i]
 		if p.Status.Phase != corev1.PodRunning {
 			continue
 		}
-		if ctl := metav1.GetControllerOf(p); ctl != nil && string(ctl.UID) == uid {
+		if c := metav1.GetControllerOf(p); c != nil && owners[string(c.UID)] {
 			out = append(out, *p)
 		}
 	}
