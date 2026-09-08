@@ -41,10 +41,16 @@ type Scope struct {
 	Lookback   Duration `json:"lookback"`
 }
 
+type Rate struct {
+	CPUHour    float64 `json:"cpuHour"`
+	MemGiBHour float64 `json:"memGiBHour"`
+}
+
 type ConnectorSpec struct {
 	URL              string `json:"url"`
 	Mode             string `json:"mode"`
-	EstimateFallback bool   `json:"estimateFallback"`
+	EstimateFallback *bool  `json:"estimateFallback,omitempty"`
+	Rates            *Rate  `json:"rates,omitempty"`
 }
 
 type Connectors struct {
@@ -79,6 +85,8 @@ type Config struct {
 	Output     Output     `json:"output"`
 }
 
+func boolPtr(b bool) *bool { return &b }
+
 func Default() *Config {
 	return &Config{
 		Scope: Scope{
@@ -87,7 +95,7 @@ func Default() *Config {
 		},
 		Connectors: Connectors{
 			PromQL:       ConnectorSpec{URL: "auto"},
-			OpenCost:     ConnectorSpec{URL: "auto", EstimateFallback: true},
+			OpenCost:     ConnectorSpec{URL: "auto", EstimateFallback: boolPtr(true)},
 			Alertmanager: ConnectorSpec{URL: "auto"},
 			GitOps:       ConnectorSpec{Mode: "auto"},
 		},
@@ -169,11 +177,8 @@ func (c *Config) applyDefaults() {
 	if c.Output.FailOn == "" {
 		c.Output.FailOn = d.Output.FailOn
 	}
-	// OpenCost.EstimateFallback defaults to true only when the whole opencost
-	// block was omitted; if the user wrote an opencost block they opt in explicitly.
-	// For M1 we always want the default-on behavior, so force it when unset via URL check above.
-	if d.Connectors.OpenCost.EstimateFallback && c.Connectors.OpenCost.URL == "auto" {
-		c.Connectors.OpenCost.EstimateFallback = true
+	if c.Connectors.OpenCost.EstimateFallback == nil {
+		c.Connectors.OpenCost.EstimateFallback = boolPtr(true)
 	}
 }
 
@@ -193,6 +198,17 @@ func (c *Config) Validate() error {
 	case strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://"):
 	default:
 		return fmt.Errorf("connectors.promql.url must be auto|disabled|an http(s) URL, got %q", u)
+	}
+	switch u := c.Connectors.OpenCost.URL; {
+	case u == "auto" || u == "disabled":
+	case strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://"):
+	default:
+		return fmt.Errorf("connectors.opencost.url must be auto|disabled|an http(s) URL, got %q", u)
+	}
+	if r := c.Connectors.OpenCost.Rates; r != nil {
+		if r.CPUHour <= 0 || r.MemGiBHour <= 0 {
+			return fmt.Errorf("connectors.opencost.rates.{cpuHour,memGiBHour} must be positive, got %v/%v", r.CPUHour, r.MemGiBHour)
+		}
 	}
 	if time.Duration(c.Scope.Lookback) <= 0 {
 		return fmt.Errorf("scope.lookback must be positive, got %s", time.Duration(c.Scope.Lookback))

@@ -6,6 +6,12 @@ scope:
   lookback: 168h
 connectors:
   promql: { url: "http://prom.mon:9090" }
+  opencost:
+    url: auto
+    estimateFallback: true
+    rates:
+      cpuHour: 0.031
+      memGiBHour: 0.004
 focus: [cost]
 llm:
   provider: openai-compatible
