@@ -1,0 +1,10 @@
+default:
+  cpuHour: 0.031
+  memGiBHour: 0.004
+byInstanceType:
+  m6i.large: { cpuHour: 0.0210, memGiBHour: 0.0028 }
+  c6i.large: { cpuHour: 0.0250, memGiBHour: 0.0033 }
+  r6i.large: { cpuHour: 0.0165, memGiBHour: 0.0022 }
+  n2-standard-4: { cpuHour: 0.0240, memGiBHour: 0.0032 }
+  e2-standard-4: { cpuHour: 0.0170, memGiBHour: 0.0023 }
+  Standard_D4s_v5: { cpuHour: 0.0230, memGiBHour: 0.0031 }
