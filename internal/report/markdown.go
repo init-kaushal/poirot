@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"text/template"
@@ -24,6 +25,18 @@ type mdData struct {
 	Skipped    []string
 	Summary    *Summary
 	LLMBanner  string
+
+	Cost         *CostMeta
+	CostBanner   string
+	CostWastePct int
+	CostTop5     []costRow
+}
+
+type costRow struct {
+	RuleID  string
+	Object  string
+	Savings float64
+	Action  string
 }
 
 type connectorRow struct {
@@ -65,6 +78,19 @@ var mdTmpl = template.Must(template.New("report").Funcs(mdFuncs).Parse(`# poirot
 {{add $i 1}}. {{$a}}
 {{- end}}
 
+{{end}}{{if .Cost}}## Cost
+
+Estimated monthly spend: ${{printf "%.2f" .Cost.MonthlyTotal}} · estimated waste: ${{printf "%.2f" .Cost.EstimatedMonthlyWaste}} ({{.CostWastePct}}%) · window: {{.Cost.Window}}
+{{if .CostBanner}}
+{{.CostBanner}}
+{{end}}
+{{if .CostTop5}}
+| Finding | Object | ~$/mo | Action |
+| --- | --- | --- | --- |
+{{- range .CostTop5}}
+| {{.RuleID}} | {{.Object}} | {{printf "%.2f" .Savings}} | {{.Action}} |
+{{- end}}
+{{end}}
 {{end}}## Findings
 {{if not .HasContent}}{{if .Skipped}}
 No findings from the checks that ran.
@@ -138,6 +164,7 @@ func (r Report) Markdown() ([]byte, error) {
 		banner = "> ⚠️ AI analysis " + r.Meta.LLM.Status
 	}
 
+	costBanner, costWastePct, costTop5 := buildCostView(r)
 	data := mdData{
 		Meta:       r.Meta,
 		Connectors: rows,
@@ -146,10 +173,81 @@ func (r Report) Markdown() ([]byte, error) {
 		Skipped:    skipped,
 		Summary:    r.Summary,
 		LLMBanner:  banner,
+
+		Cost:         r.Meta.Cost,
+		CostBanner:   costBanner,
+		CostWastePct: costWastePct,
+		CostTop5:     costTop5,
 	}
 	var buf bytes.Buffer
 	if err := mdTmpl.Execute(&buf, data); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// buildCostView derives the markdown Cost-section fields from the report.
+// Returns zero values when r.Meta.Cost is nil (caller leaves data.Cost nil so
+// the template's {{if .Cost}} guard skips the whole section).
+func buildCostView(r Report) (banner string, wastePct int, top5 []costRow) {
+	cm := r.Meta.Cost
+	if cm == nil {
+		return "", 0, nil
+	}
+	if cm.Basis != "measured" {
+		banner = "> 💰 Cost figures are estimated (no OpenCost detected) — directional only."
+	}
+	if cm.MonthlyTotal > 0 {
+		wastePct = int(math.Round(cm.EstimatedMonthlyWaste / cm.MonthlyTotal * 100))
+	}
+
+	var rows []costRow
+	for _, f := range r.Findings {
+		if !strings.HasPrefix(f.RuleID, "cost/") {
+			continue
+		}
+		savings, ok := costSavings(f)
+		if !ok {
+			continue
+		}
+		rows = append(rows, costRow{
+			RuleID:  f.RuleID,
+			Object:  f.Object.String(),
+			Savings: savings,
+			Action:  f.Summary,
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Savings != rows[j].Savings {
+			return rows[i].Savings > rows[j].Savings
+		}
+		if rows[i].RuleID != rows[j].RuleID {
+			return rows[i].RuleID < rows[j].RuleID
+		}
+		return rows[i].Object < rows[j].Object
+	})
+	if len(rows) > 5 {
+		rows = rows[:5]
+	}
+	return banner, wastePct, rows
+}
+
+// costSavings returns a finding's "estimatedMonthlySaving" evidence value,
+// falling back to "estimatedMonthlyCost", or ok=false if neither is present.
+func costSavings(f analyzer.Finding) (float64, bool) {
+	var cost float64
+	var hasCost bool
+	for _, e := range f.Evidence {
+		switch e.Query {
+		case "estimatedMonthlySaving":
+			if v, ok := e.Value.(float64); ok {
+				return v, true
+			}
+		case "estimatedMonthlyCost":
+			if v, ok := e.Value.(float64); ok {
+				cost, hasCost = v, true
+			}
+		}
+	}
+	return cost, hasCost
 }

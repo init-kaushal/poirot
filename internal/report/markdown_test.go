@@ -2,6 +2,7 @@ package report
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,6 +107,40 @@ func TestMarkdownCorrelatedLine(t *testing.T) {
 	md, err := rep.Markdown()
 	require.NoError(t, err)
 	require.Contains(t, string(md), "Correlated: b/2@Pod/p/y")
+}
+
+func TestMarkdownCostSectionEstimatedBanner(t *testing.T) {
+	r := Build(Meta{Version: "v", Context: "c", Lookback: "24h"}, nil, []analyzer.Finding{
+		{RuleID: "cost/idle", Domain: "cost", Severity: analyzer.SeverityWarning, Title: "Workload is idle",
+			Object:   analyzer.ObjectRef{Kind: "Deployment", Namespace: "t", Name: "old"},
+			Evidence: []analyzer.Evidence{{Source: "cost", Query: "estimatedMonthlySaving", Value: 60.0}},
+			Summary:  "scale to zero"},
+		{RuleID: "cost/orphaned-lb", Domain: "cost", Severity: analyzer.SeverityWarning, Title: "LB has no backends",
+			Object:   analyzer.ObjectRef{Kind: "Service", Namespace: "t", Name: "edge"},
+			Evidence: []analyzer.Evidence{{Source: "cost", Query: "estimatedMonthlyCost", Value: 18.0}},
+			Summary:  "delete the service"},
+	})
+	r.Meta.Cost = &CostMeta{Basis: "estimated", Currency: "USD", Window: "7d", MonthlyTotal: 1000, EstimatedMonthlyWaste: 250}
+
+	md, err := r.Markdown()
+	require.NoError(t, err)
+	s := string(md)
+	require.Contains(t, s, "## Cost")
+	require.Contains(t, s, "💰 Cost figures are estimated")
+	require.Contains(t, s, "$1000")
+	require.Contains(t, s, "(25%)")
+	require.Less(t, strings.Index(s, "cost/idle"), strings.Index(s, "cost/orphaned-lb"))
+}
+
+func TestMarkdownCostSectionMeasuredNoBanner(t *testing.T) {
+	r := Build(Meta{Version: "v", Context: "c", Lookback: "24h"}, nil, nil)
+	r.Meta.Cost = &CostMeta{Basis: "measured", Currency: "USD", Window: "7d", MonthlyTotal: 500}
+
+	md, err := r.Markdown()
+	require.NoError(t, err)
+	s := string(md)
+	require.Contains(t, s, "## Cost")
+	require.NotContains(t, s, "💰")
 }
 
 func TestMarkdownNoFindings(t *testing.T) {
