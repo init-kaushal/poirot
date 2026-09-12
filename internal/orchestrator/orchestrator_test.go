@@ -435,20 +435,33 @@ func costWorkloadSrc() K8sSource {
 
 func TestRunPopulatesCostMetaMeasured(t *testing.T) {
 	cfg := testConfig()
-	cfg.Connectors.OpenCost.URL = "auto" // required so opts.OpenCost is actually probed, not skipped as "disabled"
+	cfg.Connectors.OpenCost.URL = "auto" // explicit for clarity — config.Default() already sets "auto"
 
 	res, err := Run(context.Background(), Options{Config: cfg, Version: "t", K8s: costWorkloadSrc(), OpenCost: fakeOpencost{}})
 	require.NoError(t, err)
 	require.NotNil(t, res.Report.Meta.Cost)
 	require.Equal(t, "measured", res.Report.Meta.Cost.Basis)
 
+	// Pin the join: MonthlyTotal is derived by summing snap.Cost.Workloads, so
+	// this can only be (20+5)*30/7 if the fixture's team/web Deployment was
+	// correctly joined (by Namespace+Controller+ControllerKind) to the
+	// allocation row {CPUCost:20, RAMCost:5}. With no measured workloads
+	// (a silently broken join), MonthlyTotal would sum an empty slice => 0.
+	require.InDelta(t, (20.0+5.0)*30.0/7.0, res.Report.Meta.Cost.MonthlyTotal, 0.01,
+		"MonthlyTotal must reflect the joined team/web workload's allocation row, not an empty measured set")
+
 	var hasCost bool
+	var hasWebFinding bool
 	for _, f := range res.Report.Findings {
 		if f.Domain == "cost" {
 			hasCost = true
 		}
+		if f.Object.Namespace == "team" && f.Object.Name == "web" {
+			hasWebFinding = true
+		}
 	}
 	require.True(t, hasCost, "at least one cost/* finding (even cost/skipped-adjacent rules) must be present")
+	require.True(t, hasWebFinding, "a finding referencing the joined team/web workload must be present")
 }
 
 func TestRunCostEstimateWhenNoOpenCost(t *testing.T) {
