@@ -24,7 +24,7 @@ sleep 60
 kubectl delete namespace poirot-demo     # teardown
 ```
 
-Status: M3 — reliability + slo + change, plus an LLM investigation layer (probable cause, correlation, executive summary). Runs with no API key (analysis skipped, deterministic report).
+Status: M4 — reliability + slo + change + cost (rightsizing, idle, orphaned resources, spend trend), plus the M3 LLM investigation layer. Cost is measured from OpenCost when reachable, otherwise estimated from resource requests.
 
 The `slo` analyzer needs a PromQL-compatible backend (Prometheus, VictoriaMetrics,
 Thanos, Mimir). Set `connectors.promql.url` to `auto` (discovered + reached via the
@@ -45,3 +45,16 @@ summary. This layer is additive: the deterministic core of `report.json` /
 - `poirot run --no-llm` forces the deterministic-only report regardless of config.
 - With no API key the LLM phase is skipped, and the report notes it
   (`meta.llm.status` and a banner in `report.md`).
+
+## Cost analysis
+
+`poirot` always runs a cost pass. With OpenCost reachable (`connectors.opencost.url: auto`
+discovers it via the API-server proxy, or set an explicit URL) the numbers are **measured**;
+otherwise they are **estimated** from pod resource requests × a small built-in price sheet
+keyed by node instance type, with actual usage pulled from Prometheus when available.
+Estimated figures render behind a "directional only" banner and are labelled `estimated`
+in `report.json`.
+
+Set `connectors.opencost.estimateFallback: false` to skip the estimate and emit a
+`cost/skipped` note instead. Override the price sheet's blended default with
+`connectors.opencost.rates: {cpuHour, memGiBHour}`.
