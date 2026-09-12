@@ -28,12 +28,32 @@ func From(cs *snapshot.CostSet, findings []analyzer.Finding) *report.CostMeta {
 		if !strings.HasPrefix(f.RuleID, "cost/") {
 			continue
 		}
+		// Mirror markdown.go's costSavings fallback: prefer
+		// estimatedMonthlySaving, else estimatedMonthlyCost (cost/orphaned-pvc
+		// and cost/orphaned-lb only ever carry the latter) — otherwise the
+		// headline waste total undercounts what the rendered table shows (I1).
+		var saving float64
+		var found bool
 		for _, e := range f.Evidence {
 			if e.Query == "estimatedMonthlySaving" {
 				if v, ok := toFloat(e.Value); ok {
-					m.EstimatedMonthlyWaste += v
+					saving, found = v, true
+					break // prefer Saving; stop scanning this finding
 				}
 			}
+		}
+		if !found {
+			for _, e := range f.Evidence {
+				if e.Query == "estimatedMonthlyCost" {
+					if v, ok := toFloat(e.Value); ok {
+						saving, found = v, true
+						break
+					}
+				}
+			}
+		}
+		if found {
+			m.EstimatedMonthlyWaste += saving
 		}
 	}
 	return m

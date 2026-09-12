@@ -1,6 +1,7 @@
 package cost
 
 import (
+	"math"
 	"sort"
 	"time"
 
@@ -13,6 +14,11 @@ import (
 // checkOrphanedPVC flags a bound PVC, older than a week, that no pod mounts
 // (spec cost/orphaned-pvc). snap.PVCs is iterated in a (namespace, name)-sorted
 // copy — collection order must not leak into the output.
+//
+// basis is currently unused by this rule (I5): the dollar figure is always
+// the flat capacityGiB*0.10 estimate below, never OpenCost's real per-PVC
+// pvCost, so the "basis" evidence is hardcoded to "estimated" regardless of
+// what the caller passes here.
 func checkOrphanedPVC(snap *snapshot.Snapshot, basis snapshot.CostBasis) []analyzer.Finding {
 	referenced := map[string]bool{}
 	for i := range snap.Pods {
@@ -45,6 +51,9 @@ func checkOrphanedPVC(snap *snapshot.Snapshot, basis snapshot.CostBasis) []analy
 
 		q := pvc.Status.Capacity[corev1.ResourceStorage]
 		capacityBytes := q.AsApproximateFloat64()
+		if math.IsInf(capacityBytes, 0) || math.IsNaN(capacityBytes) {
+			capacityBytes = 0
+		}
 		storageClass := ""
 		if pvc.Spec.StorageClassName != nil {
 			storageClass = *pvc.Spec.StorageClassName
@@ -66,7 +75,11 @@ func checkOrphanedPVC(snap *snapshot.Snapshot, basis snapshot.CostBasis) []analy
 				{Source: "cost", Query: "storageClass", Value: storageClass},
 				{Source: "cost", Query: "ageDays", Value: ageDays},
 				{Source: "cost", Query: "estimatedMonthlyCost", Value: estimatedMonthlyCost},
-				{Source: "cost", Query: "basis", Value: string(basis)},
+				// basis is always "estimated" here — M4 doesn't join OpenCost's
+				// per-resource pvCost/loadBalancerCost (that data is folded
+				// into workload MonthlyCost and discarded); the dollar figure
+				// is always the flat constant above.
+				{Source: "cost", Query: "basis", Value: "estimated"},
 			},
 			Summary: "a bound PVC older than 7 days is mounted by no pod — delete it to stop paying for the volume",
 		})
@@ -77,6 +90,11 @@ func checkOrphanedPVC(snap *snapshot.Snapshot, basis snapshot.CostBasis) []analy
 // checkOrphanedLB flags a LoadBalancer Service that has a selector but no ready
 // pod behind it (spec cost/orphaned-lb). A Service with an empty selector is
 // externally managed and never flagged.
+//
+// basis is currently unused by this rule (I5): the dollar figure is always
+// the flat $18.00 estimate below, never OpenCost's real per-Service
+// loadBalancerCost, so the "basis" evidence is hardcoded to "estimated"
+// regardless of what the caller passes here.
 func checkOrphanedLB(snap *snapshot.Snapshot, basis snapshot.CostBasis) []analyzer.Finding {
 	svcs := make([]corev1.Service, len(snap.Services))
 	copy(svcs, snap.Services)
@@ -93,11 +111,18 @@ func checkOrphanedLB(snap *snapshot.Snapshot, basis snapshot.CostBasis) []analyz
 		if svc.Spec.Type != corev1.ServiceTypeLoadBalancer || len(svc.Spec.Selector) == 0 {
 			continue
 		}
+		// I4: a Service needs far less time to prove itself orphaned than a
+		// PVC (cloud LB provisioning is minutes, not days) — 1h guard avoids
+		// firing on a Service mid-creation or mid-rolling-restart.
+		age := time.Since(svc.CreationTimestamp.Time)
+		if age <= time.Hour {
+			continue
+		}
 		if lbHasReadyPod(snap, svc) {
 			continue
 		}
 
-		ageDays := time.Since(svc.CreationTimestamp.Time).Hours() / 24
+		ageDays := age.Hours() / 24
 		out = append(out, analyzer.Finding{
 			RuleID:   "cost/orphaned-lb",
 			Domain:   "cost",
@@ -110,7 +135,11 @@ func checkOrphanedLB(snap *snapshot.Snapshot, basis snapshot.CostBasis) []analyz
 			Evidence: []analyzer.Evidence{
 				{Source: "cost", Query: "ageDays", Value: ageDays},
 				{Source: "cost", Query: "estimatedMonthlyCost", Value: 18.00},
-				{Source: "cost", Query: "basis", Value: string(basis)},
+				// basis is always "estimated" here — M4 doesn't join OpenCost's
+				// per-resource pvCost/loadBalancerCost (that data is folded
+				// into workload MonthlyCost and discarded); the dollar figure
+				// is always the flat constant above.
+				{Source: "cost", Query: "basis", Value: "estimated"},
 			},
 			Summary: "a LoadBalancer Service with a selector has no ready pods — the cloud load balancer is billed with nothing behind it",
 		})

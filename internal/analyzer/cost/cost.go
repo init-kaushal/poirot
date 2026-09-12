@@ -62,6 +62,18 @@ func (a *Analyzer) Analyze(_ context.Context, snap *snapshot.Snapshot) ([]analyz
 	out = append(out, checkOrphanedLB(snap, cs.Basis)...)
 	out = append(out, checkRetainedJobs(snap)...)
 	out = append(out, checkNamespaceSpendTrend(cs)...)
+
+	// I6: every check* function above leaves Evidence.At at its zero value
+	// (unlike slo/change/reliability, which all set it) — backfill from
+	// CostSet.CollectedAt here rather than threading it through every
+	// check* signature, which would ripple into every existing test call site.
+	for i := range out {
+		for j := range out[i].Evidence {
+			if out[i].Evidence[j].At.IsZero() {
+				out[i].Evidence[j].At = cs.CollectedAt
+			}
+		}
+	}
 	return out, nil
 }
 

@@ -290,6 +290,9 @@ func fillUsage(ctx context.Context, pc connector.Connector, workloads []snapshot
 	if pc == nil {
 		return false
 	}
+	// keyed on (namespace, name) only — a same-named Deployment+StatefulSet in one
+	// namespace will collide; fixing this needs the promql exprs to also carry
+	// a workload-kind label (deferred, needs live-Prometheus validation).
 	byKey := make(map[string]int, len(workloads))
 	for i := range workloads {
 		byKey[workloads[i].Namespace+"\x00"+workloads[i].Name] = i

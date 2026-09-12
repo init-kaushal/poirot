@@ -27,3 +27,17 @@ func TestFromRollsUpWasteFromFindings(t *testing.T) {
 }
 
 func TestFromNilSafe(t *testing.T) { require.Nil(t, From(nil, nil)) }
+
+func TestFromFallsBackToEstimatedMonthlyCostForOrphanedFindings(t *testing.T) { // I1
+	cs := &snapshot.CostSet{
+		Basis: snapshot.CostEstimated, Currency: "USD", Window: "7d",
+		Workloads: []snapshot.WorkloadCost{{MonthlyCost: 0}},
+	}
+	findings := []analyzer.Finding{
+		{RuleID: "cost/idle", Domain: "cost", Evidence: []analyzer.Evidence{{Query: "estimatedMonthlySaving", Value: 40.0}}},
+		// cost/orphaned-lb-style: only estimatedMonthlyCost, no estimatedMonthlySaving.
+		{RuleID: "cost/orphaned-lb", Domain: "cost", Evidence: []analyzer.Evidence{{Query: "estimatedMonthlyCost", Value: 18.0}}},
+	}
+	m := From(cs, findings)
+	require.InDelta(t, 58.0, m.EstimatedMonthlyWaste, 1e-9)
+}

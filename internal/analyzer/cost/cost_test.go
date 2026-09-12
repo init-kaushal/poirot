@@ -118,6 +118,29 @@ func TestAnalyzeRunsAllRules(t *testing.T) {
 	}
 }
 
+func TestAnalyzeBackfillsEvidenceAt(t *testing.T) { // I6
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	snap := &snapshot.Snapshot{Cost: &snapshot.CostSet{
+		Basis: snapshot.CostMeasured, CollectedAt: at,
+		Workloads: []snapshot.WorkloadCost{{Namespace: "t", Kind: "Deployment", Name: "idle", Replicas: 2,
+			CPURequestCores: 1, CPUUsageCores: 0.001, MemRequestBytes: 1 << 30, MemUsageBytes: 1 << 20,
+			MonthlyCost: 30, MonthlyCPUCost: 20, MonthlyMemCost: 10}},
+	}}
+	out, err := New().Analyze(context.Background(), snap)
+	require.NoError(t, err)
+	var got *analyzer.Finding
+	for i := range out {
+		if out[i].RuleID == "cost/idle" {
+			got = &out[i]
+		}
+	}
+	require.NotNil(t, got)
+	require.NotEmpty(t, got.Evidence)
+	for _, e := range got.Evidence {
+		require.Equal(t, at, e.At)
+	}
+}
+
 func TestSafeRatio(t *testing.T) {
 	_, ok := safeRatio(1, 0)
 	require.False(t, ok)

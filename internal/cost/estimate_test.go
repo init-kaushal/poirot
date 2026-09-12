@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/init-kaushal/poirot/internal/config"
 	"github.com/init-kaushal/poirot/internal/connector"
 	"github.com/init-kaushal/poirot/internal/snapshot"
 	"github.com/stretchr/testify/require"
@@ -161,6 +163,30 @@ func TestEstimateDeploymentInstanceTypeViaReplicaSet(t *testing.T) {
 	cs := Estimate(context.Background(), snap, nil, mustSheet(t))
 	// r6i.large cpuHour is 0.0165; if it fell back to cluster-modal (m6i, 0.0210) this would differ
 	require.InDelta(t, 3*0.0165*730, cs.Workloads[0].MonthlyCPUCost, 1e-3)
+}
+
+// TestEstimateSanitizesNonFiniteRequest locks C1: a container requesting an
+// absurd-but-syntactically-valid quantity (resource.MustParse("1e400") ==
+// +Inf, verified empirically) must not produce a CostSet that fails to
+// json.Marshal. Estimate() alone may still surface +Inf; Collect() is the
+// boundary that must sanitize it before it reaches Evidence.Value or
+// report.Meta.Cost.
+func TestEstimateSanitizesNonFiniteRequest(t *testing.T) {
+	snap := &snapshot.Snapshot{
+		Meta:        snapshot.Meta{CollectedAt: time.Unix(0, 0).UTC()},
+		Nodes:       []corev1.Node{node("n", "m6i.large")},
+		Pods:        []corev1.Pod{runningPod("t", "p", "n", ctrlRef("Deployment", "t", "huge"))},
+		Deployments: []appsv1.Deployment{deploy("t", "huge", 1, "1", "1e400")}, // absurd memory request
+	}
+	cs := Estimate(context.Background(), snap, nil, mustSheet(t))
+	require.True(t, math.IsInf(cs.Workloads[0].MonthlyMemCost, 1), "Estimate alone is expected to still surface +Inf")
+
+	spec := config.ConnectorSpec{EstimateFallback: ptr(true)}
+	collected := Collect(context.Background(), snap, connector.NewRegistry(), spec)
+	require.NotNil(t, collected)
+	b, err := json.Marshal(collected) // this is the assertion that matters: must not error
+	require.NoError(t, err)
+	require.NotContains(t, string(b), "Inf")
 }
 
 // fakePromql is a minimal connector.Connector for the usage path.

@@ -21,6 +21,8 @@ func TestRightsizingFiresBelowHalfUtil(t *testing.T) {
 	require.Equal(t, wl.Kind, f.Object.Kind)
 	require.NotNil(t, evByKey(f, "estimatedMonthlySaving"))
 	require.NotNil(t, evByKey(f, "basis"))
+	require.Contains(t, f.Summary, "Set requests to cpu=") // I9: concrete remediation
+	require.Contains(t, f.Summary, "$")
 }
 
 func TestRightsizingDoesNotFireAt51Pct(t *testing.T) {
@@ -46,15 +48,29 @@ func TestIdleFiresAndNotForDaemonSet(t *testing.T) {
 	f, ok := checkIdle(fire, snapshot.CostMeasured, hpa)
 	require.True(t, ok)
 	require.Equal(t, "cost/idle", f.RuleID)
-	require.Equal(t, analyzer.SeverityWarning, f.Severity) // MonthlyCost >= 20
+	// I3: severity is always Info now — CPU alone can't prove a workload is
+	// unused, even at a high MonthlyCost, so the old >=20 => Warning
+	// escalation must not fire for this rule.
+	require.Equal(t, analyzer.SeverityInfo, f.Severity)
+	require.Contains(t, f.Summary, "verify first") // I3: hedged language
 	sav := evByKey(f, "estimatedMonthlySaving")
 	require.NotNil(t, sav)
 	require.Equal(t, fire.MonthlyCost, sav.Value)
+	require.Contains(t, f.Summary, "$30.00") // I9: concrete remediation
 
 	ds := fire
 	ds.Kind = "DaemonSet"
 	_, ok = checkIdle(ds, snapshot.CostMeasured, hpa)
 	require.False(t, ok)
+}
+
+func TestIdleCapsAtInfoEvenAtHighMonthlyCost(t *testing.T) { // I3
+	wl := snapshot.WorkloadCost{Namespace: "t", Kind: "Deployment", Name: "pricey", Replicas: 2,
+		CPURequestCores: 4, CPUUsageCores: 0.001, MemRequestBytes: 4 << 30, MemUsageBytes: 1 << 20,
+		MonthlyCost: 500, MonthlyCPUCost: 400, MonthlyMemCost: 100}
+	f, ok := checkIdle(wl, snapshot.CostMeasured, map[string]bool{})
+	require.True(t, ok)
+	require.Equal(t, analyzer.SeverityInfo, f.Severity) // old code would have escalated to Warning here
 }
 
 func TestOverReplicatedFiresAndSuppressedByHPA(t *testing.T) {
@@ -65,6 +81,8 @@ func TestOverReplicatedFiresAndSuppressedByHPA(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "cost/over-replicated", f.RuleID)
 	require.NotNil(t, evByKey(f, "suggestedReplicas"))
+	require.Contains(t, f.Summary, "Reduce replicas from 6 to") // I9: concrete remediation
+	require.Contains(t, f.Summary, "$")
 
 	_, ok = checkOverReplicated(wl, snapshot.CostMeasured, map[string]bool{key(wl): true})
 	require.False(t, ok)

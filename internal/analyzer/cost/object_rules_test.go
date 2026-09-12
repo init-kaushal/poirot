@@ -60,7 +60,9 @@ func TestOrphanedPVCFiresOnlyForBoundUnreferencedOld(t *testing.T) {
 	require.Equal(t, "gp3", evByKey(fs[0], "storageClass").Value)
 	require.InDelta(t, 20.0, evByKey(fs[0], "capacityBytes").Value.(float64)/(1<<30), 0.5)
 	require.InDelta(t, 2.0, evByKey(fs[0], "estimatedMonthlyCost").Value.(float64), 0.05)
-	require.Equal(t, "measured", evByKey(fs[0], "basis").Value)
+	// I5: basis is always "estimated" — this rule never measures per-PVC cost,
+	// even when called with snapshot.CostMeasured.
+	require.Equal(t, "estimated", evByKey(fs[0], "basis").Value)
 }
 
 func TestOrphanedLBIgnoresEmptySelectorAndBackedServices(t *testing.T) {
@@ -103,7 +105,28 @@ func TestOrphanedLBIgnoresEmptySelectorAndBackedServices(t *testing.T) {
 	require.Equal(t, "lb-orphan", fs[0].Object.Name)
 	require.Equal(t, "Service", fs[0].Object.Kind)
 	require.Equal(t, 18.0, evByKey(fs[0], "estimatedMonthlyCost").Value)
-	require.Equal(t, "measured", evByKey(fs[0], "basis").Value)
+	// I5: basis is always "estimated" — this rule never measures per-Service
+	// cost, even when called with snapshot.CostMeasured.
+	require.Equal(t, "estimated", evByKey(fs[0], "basis").Value)
+}
+
+func TestOrphanedLBIgnoresServiceYoungerThanOneHour(t *testing.T) { // I4
+	snap := &snapshot.Snapshot{
+		Services: []corev1.Service{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "default", Name: "lb-fresh",
+					CreationTimestamp: metav1.NewTime(time.Now().Add(-30 * time.Minute)),
+				},
+				Spec: corev1.ServiceSpec{
+					Type:     corev1.ServiceTypeLoadBalancer,
+					Selector: map[string]string{"app": "missing"},
+				},
+			},
+		},
+	}
+	fs := checkOrphanedLB(snap, snapshot.CostMeasured)
+	require.Empty(t, fs)
 }
 
 func TestRetainedJobsPerNamespaceAndNilSafe(t *testing.T) {

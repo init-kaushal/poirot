@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -33,7 +34,7 @@ func Collect(ctx context.Context, snap *snapshot.Snapshot, reg *connector.Regist
 	if reg != nil && reg.Satisfied([]string{"opencost"}) {
 		if oc, ok := reg.Get("opencost"); ok {
 			if cs, err := collectMeasured(ctx, snap, oc); err == nil {
-				return cs
+				return sanitize(cs)
 			} else {
 				noteFromMeasured = err.Error()
 			}
@@ -52,6 +53,44 @@ func Collect(ctx context.Context, snap *snapshot.Snapshot, reg *connector.Regist
 	cs := Estimate(ctx, snap, reg, sheet)
 	if cs != nil && noteFromMeasured != "" {
 		cs.Note = joinNotes(noteFromMeasured, cs.Note)
+	}
+	return sanitize(cs)
+}
+
+// sanitize replaces any non-finite float in cs with 0 before it can reach
+// Evidence.Value or report.Meta.Cost — a single malformed resource quantity
+// (e.g. a container requesting "1e400") must never make the whole report
+// unmarshalable. -1 sentinels (usage/prior-cost "unknown") are preserved.
+func sanitize(cs *snapshot.CostSet) *snapshot.CostSet {
+	if cs == nil {
+		return cs
+	}
+	fin := func(f float64) float64 {
+		if math.IsInf(f, 0) || math.IsNaN(f) {
+			return 0
+		}
+		return f
+	}
+	for i := range cs.Workloads {
+		w := &cs.Workloads[i]
+		w.CPURequestCores = fin(w.CPURequestCores)
+		w.MemRequestBytes = fin(w.MemRequestBytes)
+		w.MonthlyCost = fin(w.MonthlyCost)
+		w.MonthlyCPUCost = fin(w.MonthlyCPUCost)
+		w.MonthlyMemCost = fin(w.MonthlyMemCost)
+		if w.CPUUsageCores != -1 {
+			w.CPUUsageCores = fin(w.CPUUsageCores)
+		}
+		if w.MemUsageBytes != -1 {
+			w.MemUsageBytes = fin(w.MemUsageBytes)
+		}
+	}
+	for i := range cs.Namespaces {
+		n := &cs.Namespaces[i]
+		n.MonthlyCost = fin(n.MonthlyCost)
+		if n.PriorMonthlyCost != -1 {
+			n.PriorMonthlyCost = fin(n.PriorMonthlyCost)
+		}
 	}
 	return cs
 }
@@ -84,8 +123,11 @@ func collectMeasured(ctx context.Context, snap *snapshot.Snapshot, oc connector.
 		return nil, err
 	}
 	var prior, recent []ocpkg.Allocation
+	var trendNote string
 	if len(steps2) >= 2 {
 		prior, recent = steps2[0], steps2[1]
+	} else {
+		trendNote = "namespace spend trend unavailable — OpenCost returned insufficient allocation history"
 	}
 
 	workloads := measuredWorkloads(snap, steps[0])
@@ -104,7 +146,7 @@ func collectMeasured(ctx context.Context, snap *snapshot.Snapshot, oc connector.
 		CollectedAt: snap.Meta.CollectedAt,
 		Workloads:   workloads,
 		Namespaces:  namespaces,
-		Note:        "",
+		Note:        trendNote,
 	}, nil
 }
 

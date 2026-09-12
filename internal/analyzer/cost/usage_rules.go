@@ -1,6 +1,7 @@
 package cost
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/init-kaushal/poirot/internal/analyzer"
@@ -58,7 +59,8 @@ func checkRightsizing(wl snapshot.WorkloadCost, basis snapshot.CostBasis) (analy
 			{Source: "cost", Query: "estimatedMonthlySaving", Value: saving},
 			{Source: "cost", Query: "basis", Value: string(basis)},
 		},
-		Summary: "requests are more than 2x observed usage — lower them toward usage to reclaim spend",
+		Summary: fmt.Sprintf("Set requests to cpu=%dm mem=%dMi (usage ×1.3); saves ~$%.2f/mo",
+			int(sugCPU*1000), int(sugMem/(1<<20)), saving),
 	}, true
 }
 
@@ -72,17 +74,17 @@ func checkIdle(wl snapshot.WorkloadCost, basis snapshot.CostBasis, hpa map[strin
 		return analyzer.Finding{}, false
 	}
 
-	sev := analyzer.SeverityInfo
-	if wl.MonthlyCost >= 20 {
-		sev = analyzer.SeverityWarning
-	}
+	// I3: there is no traffic signal in M4 (no request-rate join), so this rule
+	// cannot actually distinguish "idle" from "I/O-bound and quiet on CPU" —
+	// cap severity at Info and hedge the language rather than claim certainty
+	// the data doesn't support.
 	hasHPA := hpa[key(wl)]
 
 	return analyzer.Finding{
 		RuleID:   "cost/idle",
 		Domain:   "cost",
-		Severity: sev,
-		Title:    "Workload is idle",
+		Severity: analyzer.SeverityInfo,
+		Title:    "Workload has very low CPU usage",
 		Object:   analyzer.ObjectRef{Kind: wl.Kind, Namespace: wl.Namespace, Name: wl.Name},
 		Evidence: []analyzer.Evidence{
 			{Source: "cost", Query: "cpuUsageCores", Value: wl.CPUUsageCores},
@@ -92,7 +94,8 @@ func checkIdle(wl snapshot.WorkloadCost, basis snapshot.CostBasis, hpa map[strin
 			{Source: "cost", Query: "hasHPA", Value: hasHPA},
 			{Source: "cost", Query: "basis", Value: string(basis)},
 		},
-		Summary: "per-pod CPU usage is near zero — scale to zero or remove the workload to free its full cost",
+		Summary: fmt.Sprintf("Per-pod CPU usage is near zero (~%dm) — scale to zero or delete if truly unused; verify first since I/O-bound services can look idle by CPU alone. Frees ~$%.2f/mo.",
+			int(wl.CPUUsageCores/float64(wl.Replicas)*1000), wl.MonthlyCost),
 	}, true
 }
 
@@ -140,6 +143,6 @@ func checkOverReplicated(wl snapshot.WorkloadCost, basis snapshot.CostBasis, hpa
 			{Source: "cost", Query: "estimatedMonthlySaving", Value: saving},
 			{Source: "cost", Query: "basis", Value: string(basis)},
 		},
-		Summary: "replicas sit well below 20% per-pod CPU utilization with no HPA — cut the replica count",
+		Summary: fmt.Sprintf("Reduce replicas from %d to %d (or add an HPA); saves ~$%.2f/mo", wl.Replicas, sug, saving),
 	}, true
 }
