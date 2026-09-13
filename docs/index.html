@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>poirot — a read-only investigation into your Kubernetes cluster</title>
+<meta name="description" content="poirot reads a kubeconfig, examines what's running, and writes up findings — probable cause, confidence, what it's costing you. Read-only. Never a write.">
+<meta property="og:title" content="poirot">
+<meta property="og:description" content="A read-only investigation into why your Kubernetes cluster is misbehaving — and what it's costing you.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#15171C">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235FA88F' stroke-width='2.2'%3E%3Ccircle cx='10.5' cy='10.5' r='6.5'/%3E%3Cline x1='15.3' y1='15.3' x2='21' y2='21'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=Source+Sans+3:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink:        #211E16;
+    --ink-dim:    #514C3C;
+    --muted:      #6B6656;
+    --bg:         #EEEBDF;
+    --bg-raise:   #F8F6EE;
+    --bg-sunken:  #E3DFD0;
+    --line:       #D9D4C3;
+    --lamp:       #3D7A67;
+    --lamp-bright:#2E5F50;
+    --lamp-wash:  rgba(61,122,103,0.10);
+    --crit:       #A8392F;
+    --crit-wash:  rgba(168,57,47,0.10);
+    --warn:       #A66A1D;
+    --warn-wash:  rgba(166,106,29,0.12);
+    --info:       #3F607B;
+    --info-wash:  rgba(63,96,123,0.10);
+    --paper-card: #F8F6EE;
+    --shadow:     0 1px 2px rgba(30,26,15,0.06), 0 8px 24px rgba(30,26,15,0.06);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink: #E8E3D3; --ink-dim:#ABA595; --muted:#8B8676;
+      --bg:#15171C; --bg-raise:#1C1F26; --bg-sunken:#101116; --line:#2B2E36;
+      --lamp:#5FA88F; --lamp-bright:#7FC2AA; --lamp-wash:rgba(95,168,143,0.12);
+      --crit:#D9695E; --crit-wash:rgba(217,105,94,0.14);
+      --warn:#D3922E; --warn-wash:rgba(211,146,46,0.14);
+      --info:#7C9CB6; --info-wash:rgba(124,156,182,0.14);
+      --paper-card:#1C1F26;
+      --shadow: 0 1px 2px rgba(0,0,0,0.35), 0 12px 32px rgba(0,0,0,0.35);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #E8E3D3; --ink-dim:#ABA595; --muted:#8B8676;
+    --bg:#15171C; --bg-raise:#1C1F26; --bg-sunken:#101116; --line:#2B2E36;
+    --lamp:#5FA88F; --lamp-bright:#7FC2AA; --lamp-wash:rgba(95,168,143,0.12);
+    --crit:#D9695E; --crit-wash:rgba(217,105,94,0.14);
+    --warn:#D3922E; --warn-wash:rgba(211,146,46,0.14);
+    --info:#7C9CB6; --info-wash:rgba(124,156,182,0.14);
+    --paper-card:#1C1F26;
+    --shadow: 0 1px 2px rgba(0,0,0,0.35), 0 12px 32px rgba(0,0,0,0.35);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Source Sans 3", -apple-system, "Segoe UI", sans-serif;
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--lamp-wash); color: var(--ink); }
+  a { color: inherit; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--lamp); outline-offset: 3px; }
+  h1, h2, h3 {
+    font-family: "Fraunces", Georgia, serif;
+    font-weight: 600;
+    text-wrap: balance;
+    margin: 0;
+    color: var(--ink);
+  }
+  code, .mono, .tag, .stat-n, .exhibit-id, .kv, pre { font-family: "JetBrains Mono", Consolas, monospace; font-variant-numeric: tabular-nums; }
+  p { margin: 0; }
+  svg { display: block; }
+  .icon { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+  [hidden] { display: none !important; }
+
+  .wrap { max-width: 920px; margin: 0 auto; padding: 0 28px; }
+
+  /* --------------------------------- nav --------------------------------- */
+  .nav {
+    position: sticky; top: 0; z-index: 20;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav-inner { max-width: 920px; margin: 0 auto; padding: 14px 28px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .brand { display: flex; align-items: center; gap: 9px; text-decoration: none; color: var(--ink); font-family: "Fraunces", serif; font-weight: 600; font-size: 1.05rem; }
+  .brand .icon { color: var(--lamp); width: 20px; height: 20px; }
+  .nav-links { display: flex; align-items: center; gap: 22px; }
+  .nav-links a { font-size: 14px; color: var(--ink-dim); text-decoration: none; }
+  .nav-links a:hover { color: var(--lamp); }
+  .icon-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 34px; height: 34px; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--bg-raise); color: var(--ink-dim); cursor: pointer;
+  }
+  .icon-btn:hover { color: var(--lamp); border-color: var(--lamp); }
+  .icon-btn .icon { width: 17px; height: 17px; }
+  .icon-btn .moon { display: none; }
+  :root[data-theme="dark"] .icon-btn .sun { display: none; }
+  :root[data-theme="dark"] .icon-btn .moon { display: block; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .icon-btn .sun { display: none; }
+    :root:not([data-theme="light"]) .icon-btn .moon { display: block; }
+  }
+
+  /* --------------------------------- hero --------------------------------- */
+  .hero { position: relative; overflow: hidden; background: var(--bg-sunken); border-bottom: 1px solid var(--line); }
+  .hero::before {
+    content: ""; position: absolute; inset: -20% -10% auto -10%; height: 130%;
+    background: radial-gradient(ellipse 620px 420px at 50% 0%, var(--lamp-wash), transparent 65%);
+    pointer-events: none;
+  }
+  .hero-glyph { position: absolute; right: -60px; top: 40px; width: 360px; height: 360px; color: var(--lamp); opacity: 0.07; pointer-events: none; }
+  .hero-inner { position: relative; padding: 88px 28px 76px; max-width: 920px; margin: 0 auto; display: flex; flex-direction: column; align-items: flex-start; gap: 28px; }
+  .eyebrow { display: inline-flex; align-items: center; gap: 10px; font-family: "JetBrains Mono", monospace; font-size: 12.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--lamp); }
+  .eyebrow::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--lamp); box-shadow: 0 0 0 3px var(--lamp-wash); }
+  .hero h1 { font-size: clamp(2.3rem, 5.2vw, 3.5rem); line-height: 1.07; letter-spacing: -0.01em; max-width: 16ch; }
+  .hero h1 em { font-style: italic; color: var(--lamp); }
+  .hero-sub { max-width: 56ch; font-size: 1.14rem; color: var(--ink-dim); }
+  .hero-sub code { color: var(--ink); }
+  .cta-row { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 4px; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 20px; border-radius: 4px; font-size: 15px; font-weight: 600; text-decoration: none; border: 1px solid transparent; transition: transform .15s ease, background .15s ease, border-color .15s ease; }
+  .btn .icon { width: 16px; height: 16px; }
+  .btn-primary { background: var(--lamp); color: #F5F3EA; }
+  .btn-primary:hover { background: var(--lamp-bright); transform: translateY(-1px); }
+  .btn-ghost { border-color: var(--line); color: var(--ink); }
+  .btn-ghost:hover { border-color: var(--lamp); color: var(--lamp); }
+
+  .stats { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 4px; overflow: hidden; width: 100%; margin-top: 8px; }
+  .stat { background: var(--bg-raise); padding: 18px 16px; }
+  .stat-n { font-size: 1.5rem; font-weight: 700; color: var(--lamp); display: block; }
+  .stat-l { font-size: 12.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 4px; display: block; }
+
+  /* ------------------------------- sections ------------------------------- */
+  section { padding: 76px 0; }
+  section + section { border-top: 1px solid var(--line); }
+  .kicker { display: flex; align-items: center; gap: 8px; font-family: "JetBrains Mono", monospace; font-size: 12.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+  .kicker .icon { width: 15px; height: 15px; color: var(--lamp); }
+  .kicker b { color: var(--lamp); font-weight: 600; }
+  .sec-title { font-size: clamp(1.55rem, 3vw, 2.05rem); margin-bottom: 18px; }
+  .sec-lede { color: var(--ink-dim); font-size: 1.05rem; max-width: 62ch; margin-bottom: 44px; }
+
+  /* ------------------------------ pipeline diagram ------------------------------ */
+  .pipeline { display: flex; align-items: stretch; gap: 0; margin-bottom: 48px; overflow-x: auto; padding-bottom: 4px; }
+  .pnode { flex: 1; min-width: 118px; display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; padding: 4px 6px; }
+  .pnode .disc { width: 52px; height: 52px; border-radius: 50%; border: 1.5px solid var(--line); background: var(--bg-raise); display: flex; align-items: center; justify-content: center; color: var(--lamp); }
+  .pnode.opt .disc { border-style: dashed; }
+  .pnode .lbl { font-size: 12.5px; font-weight: 600; color: var(--ink); }
+  .pnode .sub { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .parrow { flex: none; width: 34px; display: flex; align-items: center; justify-content: center; color: var(--line); margin-top: 26px; }
+  .parrow .icon { width: 18px; height: 18px; }
+  @media (max-width: 620px) { .pipeline { display: none; } }
+
+  /* -------------------------- method (numbered) -------------------------- */
+  .method { display: flex; flex-direction: column; }
+  .step { display: grid; grid-template-columns: 56px 1fr; gap: 20px; padding: 26px 0; border-top: 1px solid var(--line); opacity: 0; transform: translateY(10px); transition: opacity .5s ease, transform .5s ease; }
+  .step.in { opacity: 1; transform: none; }
+  .step:last-child { border-bottom: 1px solid var(--line); }
+  .step-n { font-family: "Fraunces", serif; font-size: 1.7rem; color: var(--line); line-height: 1; }
+  .step h3 { font-size: 1.15rem; margin-bottom: 6px; display: flex; align-items: center; gap: 9px; }
+  .step h3 .icon { width: 19px; height: 19px; color: var(--lamp); }
+  .step p { color: var(--ink-dim); max-width: 58ch; }
+  .step .opt { font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 2px 7px; margin-left: 2px; vertical-align: middle; }
+
+  /* ------------------------------ exhibits ------------------------------ */
+  .exhibits { display: flex; flex-direction: column; gap: 18px; }
+  .exhibit { background: var(--paper-card); border: 1px solid var(--line); border-radius: 6px; box-shadow: var(--shadow); overflow: hidden; opacity: 0; transform: translateY(10px); transition: opacity .5s ease, transform .5s ease; }
+  .exhibit.in { opacity: 1; transform: none; }
+  .exhibit-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .exhibit-id { font-size: 12px; color: var(--muted); }
+  .sev { display: inline-flex; align-items: center; gap: 5px; font-family: "JetBrains Mono", monospace; font-size: 11px; font-weight: 700; letter-spacing: .08em; padding: 3px 9px 3px 7px; border-radius: 3px; text-transform: uppercase; }
+  .sev .icon { width: 12px; height: 12px; stroke-width: 2.4; }
+  .sev-critical { background: var(--crit-wash); color: var(--crit); }
+  .sev-warning  { background: var(--warn-wash); color: var(--warn); }
+  .sev-info     { background: var(--info-wash); color: var(--info); }
+  .exhibit-body { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+  .exhibit-title { font-size: 1.02rem; font-weight: 600; }
+  .exhibit-obj { color: var(--muted); font-size: 13.5px; }
+  .kv { font-size: 13px; background: var(--bg-sunken); border: 1px solid var(--line); border-radius: 4px; padding: 12px 14px; color: var(--ink-dim); overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+  .deduction { display: flex; gap: 12px; align-items: flex-start; border-top: 1px dashed var(--line); padding-top: 14px; }
+  .deduction .icon { width: 17px; height: 17px; color: var(--lamp); margin-top: 1px; }
+  .deduction .who { font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--lamp); }
+  .deduction p { color: var(--ink); font-size: 14.5px; margin-top: 3px; }
+
+  .cost-callout { margin-top: 22px; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; background: var(--bg-raise); border: 1px solid var(--line); border-radius: 6px; padding: 18px 20px; }
+  .cost-callout .icon-wrap { width: 44px; height: 44px; border-radius: 50%; background: var(--lamp-wash); color: var(--lamp); display: flex; align-items: center; justify-content: center; flex: none; }
+  .cost-callout .big { font-family: "Fraunces", serif; font-size: 1.9rem; color: var(--lamp); }
+  .cost-callout .cap { font-size: 13.5px; color: var(--ink-dim); max-width: 44ch; flex: 1; min-width: 220px; }
+  .cost-callout .cap b { color: var(--ink); }
+
+  /* ------------------------------ inquiry grid --------------------------- */
+  .inquiry-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .inquiry { background: var(--bg-raise); padding: 26px 24px; display: flex; flex-direction: column; gap: 10px; }
+  .inquiry .icon-wrap { width: 38px; height: 38px; border-radius: 8px; background: var(--lamp-wash); color: var(--lamp); display: flex; align-items: center; justify-content: center; margin-bottom: 4px; }
+  .inquiry .icon-wrap .icon { width: 20px; height: 20px; }
+  .inquiry h3 { font-size: 1.08rem; display: flex; align-items: baseline; gap: 10px; }
+  .inquiry h3 .n { font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--muted); font-weight: 400; }
+  .inquiry p { color: var(--ink-dim); font-size: 14.5px; }
+  .inquiry .req { margin-top: auto; font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: var(--muted); padding-top: 10px; border-top: 1px dashed var(--line); }
+  .inquiry .req b { color: var(--lamp); font-weight: 600; }
+
+  /* ------------------------------ verdict list --------------------------- */
+  .verdicts { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 16px; }
+  .verdict { display: flex; gap: 12px; border-left: 3px solid var(--lamp); padding: 4px 0 4px 16px; }
+  .verdict .icon { width: 18px; height: 18px; color: var(--lamp); flex: none; margin-top: 2px; }
+  .verdict h4 { font-size: .95rem; font-weight: 700; margin-bottom: 5px; color: var(--ink); }
+  .verdict p { font-size: 14px; color: var(--ink-dim); }
+  .exit-codes { display: flex; gap: 0; margin-top: 36px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .exit-code { flex: 1; padding: 16px 18px; border-right: 1px solid var(--line); }
+  .exit-code:last-child { border-right: none; }
+  .exit-code .n { font-family: "JetBrains Mono", monospace; font-size: 1.4rem; font-weight: 700; }
+  .exit-code .n.ok { color: var(--lamp); } .exit-code .n.warn { color: var(--warn); } .exit-code .n.crit { color: var(--crit); }
+  .exit-code .d { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+  /* ------------------------------ quickstart ----------------------------- */
+  .term { background: var(--bg-sunken); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; box-shadow: var(--shadow); }
+  .term-bar { display: flex; align-items: center; gap: 7px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .term-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); }
+  .term-title { display: flex; align-items: center; gap: 6px; margin-left: 8px; font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--muted); }
+  .term-title .icon { width: 13px; height: 13px; }
+  .term pre { margin: 0; padding: 20px; overflow-x: auto; font-size: 14px; line-height: 1.75; color: var(--ink-dim); }
+  .term .c1 { color: var(--lamp); } .term .c2 { color: var(--muted); } .term .out { color: var(--ink-dim); }
+
+  /* -------------------------------- footer -------------------------------- */
+  footer { padding: 48px 0 64px; border-top: 1px solid var(--line); }
+  .foot-row { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; flex-wrap: wrap; }
+  .foot-brand { display: flex; align-items: center; gap: 8px; font-family: "Fraunces", serif; font-size: 1.15rem; }
+  .foot-brand .icon { width: 18px; height: 18px; color: var(--lamp); }
+  .foot-links { display: flex; gap: 20px; flex-wrap: wrap; }
+  .foot-links a { display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--muted); text-decoration: none; }
+  .foot-links a .icon { width: 14px; height: 14px; }
+  .foot-links a:hover { color: var(--lamp); }
+  .foot-note { font-size: 13px; color: var(--muted); margin-top: 22px; max-width: 62ch; }
+
+  @media (max-width: 720px) {
+    .hero-inner { padding: 56px 20px 48px; }
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .inquiry-grid { grid-template-columns: 1fr; }
+    .verdicts { grid-template-columns: 1fr; }
+    .exit-codes { flex-direction: column; }
+    .exit-code { border-right: none; border-bottom: 1px solid var(--line); }
+    .exit-code:last-child { border-bottom: none; }
+    section { padding: 52px 0; }
+    .nav-links a:not(.icon-btn) { display: none; }
+    .hero-glyph { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { .step, .exhibit { transition: none; opacity: 1; transform: none; } html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+
+<!-- ============================== inline icon set ============================== -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<defs>
+  <symbol id="i-glass" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><line x1="15.3" y1="15.3" x2="21" y2="21"/></symbol>
+  <symbol id="i-github" viewBox="0 0 24 24"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.56-1.11-4.56-4.95 0-1.09.39-1.99 1.03-2.69-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.03a9.5 9.5 0 0 1 5 0c1.91-1.3 2.75-1.03 2.75-1.03.55 1.37.2 2.39.1 2.64.64.7 1.03 1.6 1.03 2.69 0 3.85-2.34 4.7-4.57 4.95.36.31.68.92.68 1.85v2.75c0 .26.18.58.69.48A10 10 0 0 0 12 2Z"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"/><path d="M14 3v4h4"/><line x1="8.5" y1="12.5" x2="15.5" y2="12.5"/><line x1="8.5" y1="16" x2="13" y2="16"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.3M12 19.2v2.3M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.3M19.2 12h2.3M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.2"/><line x1="15.1" y1="15.1" x2="20.5" y2="20.5"/></symbol>
+  <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M3 12h4.5l1.5 3h6l1.5-3H21"/><path d="M5.5 5h13l2.5 7v7a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-7Z"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="10"/><line x1="12" y1="21" x2="12" y2="5"/><line x1="20" y1="21" x2="20" y2="14"/><line x1="2.5" y1="21" x2="21.5" y2="21"/></symbol>
+  <symbol id="i-bulb" viewBox="0 0 24 24"><path d="M9 18h6"/><path d="M10 21h4"/><path d="M12 3a6 6 0 0 0-3.6 10.8c.5.4.8 1 .8 1.7V16h5.6v-.5c0-.7.3-1.3.8-1.7A6 6 0 0 0 12 3Z"/></symbol>
+  <symbol id="i-pulse" viewBox="0 0 24 24"><polyline points="2,13 7,13 9.5,6 14,20 16.5,13 22,13"/></symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4 15a8 8 0 1 1 16 0"/><line x1="12" y1="15" x2="15.5" y2="10.5"/><circle cx="12" cy="15" r="1.1" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-branch" viewBox="0 0 24 24"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="6" cy="18" r="2.2"/><circle cx="6" cy="6" r="2.2"/><circle cx="18" cy="18" r="2.2"/><path d="M6 8.2v1.8a4 4 0 0 0 4 4h4a4 4 0 0 0 4 4"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M12.5 3.5H20a1 1 0 0 1 1 1v7.5a1 1 0 0 1-.3.7l-8.6 8.6a1 1 0 0 1-1.4 0l-7.5-7.5a1 1 0 0 1 0-1.4l8.6-8.6a1 1 0 0 1 .7-.3Z"/><circle cx="16.2" cy="7.8" r="1.4"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4.2"/><path d="M11 12.2 19 4.2M16.2 7 19 4.2M18.5 9.5l2-2"/></symbol>
+  <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 2v6M15 2v6M6 8h12l-1 5a5 5 0 0 1-10 0Z"/><path d="M12 17v5"/></symbol>
+  <symbol id="i-coin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v9M9.5 9.7c0-1.2 1.1-2.2 2.5-2.2s2.5.7 2.5 1.8-1 1.7-2.5 2-2.5.9-2.5 2 1.1 1.9 2.5 1.9 2.5-.7 2.5-1.9"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12,6.5 12,12 16.5,14.5"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="16" rx="1.5"/><polyline points="6.5,9.5 10,12.5 6.5,15.5"/><line x1="12.5" y1="15.5" x2="17.5" y2="15.5"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.2 5 5.8v5.6c0 5 3 8 7 9.4 4-1.4 7-4.4 7-9.4V5.8Z"/><polyline points="9,12 11.2,14.2 15.3,9.8"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><circle cx="12" cy="16.3" r="0.9" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-triangle" viewBox="0 0 24 24"><path d="M12 4 21.5 20.5h-19Z"/><line x1="12" y1="10" x2="12" y2="15"/><circle cx="12" cy="17.3" r="0.9" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="11" x2="12" y2="16"/><circle cx="12" cy="8" r="0.9" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><line x1="3" y1="12" x2="19" y2="12"/><polyline points="13,6 19,12 13,18"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M9 6H5.5a1.5 1.5 0 0 0-1.5 1.5v11A1.5 1.5 0 0 0 5.5 20h11a1.5 1.5 0 0 0 1.5-1.5V15"/><path d="M13 4h7v7"/><line x1="20" y1="4" x2="11" y2="13"/></symbol>
+</defs>
+</svg>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="#top"><svg class="icon" width="20" height="20"><use href="#i-glass"/></svg>poirot</a>
+    <div class="nav-links">
+      <a href="#method">Method</a>
+      <a href="#evidence">Evidence</a>
+      <a href="#inquiry">Analyzers</a>
+      <a href="#quickstart">Quickstart</a>
+      <a href="https://github.com/init-kaushal/poirot" target="_blank" rel="noopener" aria-label="GitHub"><svg class="icon" width="18" height="18"><use href="#i-github"/></svg></a>
+      <button class="icon-btn" id="theme-toggle" type="button" aria-label="Toggle color theme">
+        <svg class="icon sun" width="17" height="17"><use href="#i-sun"/></svg>
+        <svg class="icon moon" width="17" height="17"><use href="#i-moon"/></svg>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<div class="hero" id="top">
+  <svg class="hero-glyph" viewBox="0 0 24 24" stroke="currentColor" stroke-width="0.6" fill="none"><use href="#i-glass"/></svg>
+  <div class="hero-inner">
+    <span class="eyebrow">Case file · read-only investigation</span>
+    <h1>Something is wrong with your cluster.<br>It's been leaving <em>evidence</em>.</h1>
+    <p class="hero-sub">
+      <code>poirot</code> reads your kubeconfig, examines what's actually running, and writes up
+      what it finds — probable cause, confidence, what it's costing you — the way a good
+      investigator would. It never issues a write. Not one <code>create</code>, not one
+      <code>patch</code> — <code>get</code>, <code>list</code>, <code>watch</code>, and nothing else.
+    </p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/init-kaushal/poirot" target="_blank" rel="noopener"><svg class="icon" width="16" height="16"><use href="#i-github"/></svg>View source</a>
+      <a class="btn btn-ghost" href="#evidence"><svg class="icon" width="16" height="16"><use href="#i-search"/></svg>Read the evidence</a>
+    </div>
+    <div class="stats">
+      <div class="stat"><span class="stat-n">1</span><span class="stat-l">Go binary</span></div>
+      <div class="stat"><span class="stat-n">0</span><span class="stat-l">write verbs, ever</span></div>
+      <div class="stat"><span class="stat-n">4</span><span class="stat-l">lines of inquiry</span></div>
+      <div class="stat"><span class="stat-n">3</span><span class="stat-l">exit codes for CI</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <section id="method">
+    <span class="kicker"><svg class="icon" width="15" height="15"><use href="#i-doc"/></svg>The method</span>
+    <h2 class="sec-title">How the investigation runs</h2>
+    <p class="sec-lede">Five steps, always in the same order. The first four are cold and deterministic —
+      same cluster in, same bytes out. The fifth is optional, and says so honestly when it runs out of time.</p>
+
+    <div class="pipeline" aria-hidden="true">
+      <div class="pnode"><div class="disc"><svg class="icon" width="22" height="22"><use href="#i-search"/></svg></div><div class="lbl">Discover</div><div class="sub">probe</div></div>
+      <div class="parrow"><svg class="icon" width="18" height="18"><use href="#i-arrow"/></svg></div>
+      <div class="pnode"><div class="disc"><svg class="icon" width="22" height="22"><use href="#i-inbox"/></svg></div><div class="lbl">Collect</div><div class="sub">snapshot</div></div>
+      <div class="parrow"><svg class="icon" width="18" height="18"><use href="#i-arrow"/></svg></div>
+      <div class="pnode"><div class="disc"><svg class="icon" width="22" height="22"><use href="#i-chart"/></svg></div><div class="lbl">Analyze</div><div class="sub">4 rule sets</div></div>
+      <div class="parrow"><svg class="icon" width="18" height="18"><use href="#i-arrow"/></svg></div>
+      <div class="pnode opt"><div class="disc"><svg class="icon" width="22" height="22"><use href="#i-bulb"/></svg></div><div class="lbl">Investigate</div><div class="sub">optional</div></div>
+      <div class="parrow"><svg class="icon" width="18" height="18"><use href="#i-arrow"/></svg></div>
+      <div class="pnode"><div class="disc"><svg class="icon" width="22" height="22"><use href="#i-doc"/></svg></div><div class="lbl">Report</div><div class="sub">json + md</div></div>
+    </div>
+
+    <div class="method">
+      <div class="step"><div class="step-n">01</div><div>
+        <h3><svg class="icon" width="19" height="19"><use href="#i-search"/></svg>Discover</h3>
+        <p>Probes the cluster for a PromQL-compatible metrics backend and an OpenCost service, reached
+          through the Kubernetes API-server proxy — no port-forward, no extra RBAC beyond what's already needed to read.
+          Missing backends aren't an error; they're just noted as <code>absent</code>.</p>
+      </div></div>
+      <div class="step"><div class="step-n">02</div><div>
+        <h3><svg class="icon" width="19" height="19"><use href="#i-inbox"/></svg>Collect</h3>
+        <p>Pods, deployments, events, nodes, PVCs, jobs, HPAs — a point-in-time snapshot, taken with
+          <code>get</code>/<code>list</code>/<code>watch</code> and nothing stronger.</p>
+      </div></div>
+      <div class="step"><div class="step-n">03</div><div>
+        <h3><svg class="icon" width="19" height="19"><use href="#i-chart"/></svg>Analyze</h3>
+        <p>Four rule sets run cold over the snapshot: reliability, SLO/golden-signals, rollout risk,
+          and cost. No network calls, no LLM — pure functions over what was collected.</p>
+      </div></div>
+      <div class="step"><div class="step-n">04</div><div>
+        <h3><svg class="icon" width="19" height="19"><use href="#i-bulb"/></svg>Investigate <span class="opt">optional</span></h3>
+        <p>Handed only read tools — snapshot lookups, logs, the same metrics/cost queries — an LLM is
+          turned loose per flagged object to work out probable cause, confidence, and remediation.
+          Bounded by a tool-call, token, and wall-clock budget; it degrades to "not investigated"
+          rather than run forever.</p>
+      </div></div>
+      <div class="step"><div class="step-n">05</div><div>
+        <h3><svg class="icon" width="19" height="19"><use href="#i-doc"/></svg>Report</h3>
+        <p>A canonical <code>report.json</code> plus a rendered <code>report.md</code>. The
+          deterministic findings are byte-identical run to run. The investigator's prose — by
+          its nature — is not, and the report says so.</p>
+      </div></div>
+    </div>
+  </section>
+
+  <section id="evidence">
+    <span class="kicker"><svg class="icon" width="15" height="15"><use href="#i-search"/></svg>Exhibit room — <b>pulled from an actual run</b>, unedited</span>
+    <h2 class="sec-title">The evidence</h2>
+    <p class="sec-lede">This is real output — a local k3s cluster, three deliberately broken deployments,
+      and a 4B-parameter model running on a laptop CPU. Nothing below was written for this page.</p>
+
+    <div class="exhibits">
+      <div class="exhibit">
+        <div class="exhibit-head">
+          <span class="exhibit-id">reliability/image-pull</span>
+          <span class="sev sev-critical"><svg class="icon" width="12" height="12"><use href="#i-alert"/></svg>Critical</span>
+        </div>
+        <div class="exhibit-body">
+          <div>
+            <div class="exhibit-title">Image cannot be pulled</div>
+            <div class="exhibit-obj">Pod/poirot-demo/badimage-96d995fc7-jskbt</div>
+          </div>
+          <div class="kv">Back-off pulling image "registry.invalid/nope:v0": ErrImagePull: failed to resolve
+reference "registry.invalid/nope:v0": dial tcp: lookup registry.invalid on
+192.168.5.1:53: no such host</div>
+          <div class="deduction">
+            <svg class="icon" width="17" height="17"><use href="#i-bulb"/></svg>
+            <div><span class="who">Investigator</span>
+            <p>The image reference points to a non-existent registry (<code>registry.invalid</code>),
+              causing DNS resolution failure — as the error itself states. Confidence: high.</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="exhibit">
+        <div class="exhibit-head">
+          <span class="exhibit-id">reliability/pvc-unbound</span>
+          <span class="sev sev-warning"><svg class="icon" width="12" height="12"><use href="#i-triangle"/></svg>Warning</span>
+        </div>
+        <div class="exhibit-body">
+          <div>
+            <div class="exhibit-title">PersistentVolumeClaim is not Bound</div>
+            <div class="exhibit-obj">PersistentVolumeClaim/poirot-demo/orphaned-pvc</div>
+          </div>
+          <div class="kv">pvc.status.phase → "Pending"</div>
+          <div class="deduction">
+            <svg class="icon" width="17" height="17"><use href="#i-bulb"/></svg>
+            <div><span class="who">Investigator</span>
+            <p>The PVC is Pending because no PersistentVolume exists for the <code>local-path</code>
+              storage class — a correct inference the model reached on its own, from a bare status field.</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="exhibit">
+        <div class="exhibit-head">
+          <span class="exhibit-id">reliability/oomkilled</span>
+          <span class="sev sev-warning"><svg class="icon" width="12" height="12"><use href="#i-triangle"/></svg>Warning</span>
+        </div>
+        <div class="exhibit-body">
+          <div>
+            <div class="exhibit-title">Container was OOMKilled</div>
+            <div class="exhibit-obj">Pod/poirot-demo/memhog-68cffdfcd8-j9w4h</div>
+          </div>
+          <div class="kv">lastState.terminated → { "exitCode": 137, "reason": "OOMKilled" }</div>
+          <div class="deduction">
+            <svg class="icon" width="17" height="17"><use href="#i-clock"/></svg>
+            <div><span class="who">Investigator</span>
+            <p>Budget ran out before this object's turn. Stubbed as <code>not investigated</code> —
+              never guessed at.</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cost-callout">
+      <div class="icon-wrap"><svg class="icon" width="22" height="22"><use href="#i-coin"/></svg></div>
+      <div class="big">$4,653<span style="font-size:1rem;color:var(--muted)">/mo</span></div>
+      <p class="cap"><b>Estimated</b>, not measured — no OpenCost or Prometheus was reachable, so poirot
+        priced resource requests against a built-in rate sheet and said so, with a banner, instead of
+        pretending precision it didn't have. Rightsizing stayed silent for the same reason:
+        <code>cost/rightsizing-limited</code> — <em>needs usage data</em>.</p>
+    </div>
+  </section>
+
+  <section id="inquiry">
+    <span class="kicker"><svg class="icon" width="15" height="15"><use href="#i-shield"/></svg>Lines of inquiry</span>
+    <h2 class="sec-title">Four deterministic rule sets</h2>
+    <p class="sec-lede">Each runs independently and degrades independently. Losing one backend never
+      takes the others down with it.</p>
+    <div class="inquiry-grid">
+      <div class="inquiry">
+        <div class="icon-wrap"><svg class="icon" width="20" height="20"><use href="#i-pulse"/></svg></div>
+        <h3>Reliability <span class="n">17 checks</span></h3>
+        <p>Crash loops, OOM kills, unschedulable pods, missing limits/probes/PodDisruptionBudgets,
+          floating image tags, single points of failure.</p>
+        <div class="req">requires <b>kubeconfig only</b></div>
+      </div>
+      <div class="inquiry">
+        <div class="icon-wrap"><svg class="icon" width="20" height="20"><use href="#i-gauge"/></svg></div>
+        <h3>SLO <span class="n">golden signals</span></h3>
+        <p>CPU/memory saturation against limits, restart rate, scrape-target health, readiness —
+          pulled straight from PromQL.</p>
+        <div class="req">requires <b>Prometheus-compatible backend</b></div>
+      </div>
+      <div class="inquiry">
+        <div class="icon-wrap"><svg class="icon" width="20" height="20"><use href="#i-branch"/></svg></div>
+        <h3>Change <span class="n">rollout risk</span></h3>
+        <p>Recent rollouts and their health, deploys stuck on <code>observedGeneration</code>,
+          ReplicaSet churn — native, no GitOps tooling assumed.</p>
+        <div class="req">requires <b>kubeconfig only</b></div>
+      </div>
+      <div class="inquiry">
+        <div class="icon-wrap"><svg class="icon" width="20" height="20"><use href="#i-tag"/></svg></div>
+        <h3>Cost <span class="n">7 checks</span></h3>
+        <p>Rightsizing, idle workloads, over-replication, orphaned PVCs and LoadBalancers, retained
+          Jobs, namespace spend trend.</p>
+        <div class="req">requires <b>nothing</b> — estimates without OpenCost</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="verdict">
+    <span class="kicker"><svg class="icon" width="15" height="15"><use href="#i-shield"/></svg>The verdict</span>
+    <h2 class="sec-title">It never refuses to testify</h2>
+    <p class="sec-lede">Every optional piece has a documented failure mode, and none of them is
+      "poirot exits with an error."</p>
+    <div class="verdicts">
+      <div class="verdict"><svg class="icon" width="18" height="18"><use href="#i-key"/></svg><div><h4>No API key</h4><p>The investigation phase is skipped. The deterministic
+        report still writes, with a banner explaining why.</p></div></div>
+      <div class="verdict"><svg class="icon" width="18" height="18"><use href="#i-plug"/></svg><div><h4>No metrics backend</h4><p>SLO analysis reports itself skipped. Reliability,
+        change, and cost run exactly as if nothing were missing.</p></div></div>
+      <div class="verdict"><svg class="icon" width="18" height="18"><use href="#i-coin"/></svg><div><h4>No OpenCost</h4><p>Cost falls back to estimating from resource requests,
+        and every figure it produces is labeled <code>estimated</code>, not quietly passed off as measured.</p></div></div>
+      <div class="verdict"><svg class="icon" width="18" height="18"><use href="#i-clock"/></svg><div><h4>The model runs out of time</h4><p>A global wall-clock budget cuts the
+        investigation off cleanly. Whatever got enriched, stays enriched; the rest says
+        <code>not investigated</code> instead of a stalled process.</p></div></div>
+    </div>
+    <div class="exit-codes">
+      <div class="exit-code"><div class="n ok">0</div><div class="d">clean — nothing at or above the gate</div></div>
+      <div class="exit-code"><div class="n warn">1</div><div class="d">warning-level findings present</div></div>
+      <div class="exit-code"><div class="n crit">2</div><div class="d">critical findings present</div></div>
+    </div>
+  </section>
+
+  <section id="quickstart">
+    <span class="kicker"><svg class="icon" width="15" height="15"><use href="#i-terminal"/></svg>Quickstart</span>
+    <h2 class="sec-title">Three commands, one report</h2>
+    <div class="term">
+      <div class="term-bar"><span class="term-dot"></span><span class="term-dot"></span><span class="term-dot"></span><span class="term-title"><svg class="icon" width="13" height="13"><use href="#i-terminal"/></svg>terminal</span></div>
+      <pre><span class="c2"># clone and build</span>
+<span class="c1">git</span> clone https://github.com/init-kaushal/poirot && <span class="c1">cd</span> poirot
+<span class="c1">go</span> build -o bin/poirot ./cmd/poirot
+
+<span class="c2"># point it at a cluster and run</span>
+<span class="c1">cp</span> poirot.example.yaml poirot.yaml
+<span class="c1">./bin/poirot</span> run
+<span class="out">wrote ./poirot-out/report.json and ./poirot-out/report.md — 1 critical, 7 warning, 27 info</span></pre>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-row">
+      <div class="foot-brand"><svg class="icon" width="18" height="18"><use href="#i-glass"/></svg>poirot</div>
+      <div class="foot-links">
+        <a href="https://github.com/init-kaushal/poirot" target="_blank" rel="noopener"><svg class="icon" width="14" height="14"><use href="#i-github"/></svg>GitHub</a>
+        <a href="https://github.com/init-kaushal/poirot/tree/main/docs/superpowers/specs" target="_blank" rel="noopener"><svg class="icon" width="14" height="14"><use href="#i-doc"/></svg>Design specs</a>
+        <a href="https://init-kaushal.github.io/portfolio/" target="_blank" rel="noopener"><svg class="icon" width="14" height="14"><use href="#i-external"/></svg>Kaushal Sharma</a>
+      </div>
+    </div>
+    <p class="foot-note">A portfolio project. Reliability, SLO, and change-risk analysis shipped first;
+      an optional LLM investigation layer and OpenCost-backed cost analysis followed. Alertmanager and
+      GitOps drift detection are next.</p>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var btn = document.getElementById('theme-toggle');
+  var stored = null;
+  try { stored = localStorage.getItem('poirot-theme'); } catch (e) {}
+  if (stored === 'light' || stored === 'dark') root.setAttribute('data-theme', stored);
+
+  function current() {
+    var attr = root.getAttribute('data-theme');
+    if (attr) return attr;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  btn.addEventListener('click', function () {
+    var next = current() === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('poirot-theme', next); } catch (e) {}
+  });
+
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var targets = document.querySelectorAll('.step, .exhibit');
+  if (reduce || !('IntersectionObserver' in window)) {
+    targets.forEach(function (el) { el.classList.add('in'); });
+  } else {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) { entry.target.classList.add('in'); io.unobserve(entry.target); }
+      });
+    }, { threshold: 0.15, rootMargin: '0px 0px -40px 0px' });
+    targets.forEach(function (el) { io.observe(el); });
+  }
+})();
+</script>
+</body>
+</html>
