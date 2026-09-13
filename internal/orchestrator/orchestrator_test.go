@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -17,6 +18,7 @@ import (
 	"github.com/init-kaushal/poirot/internal/config"
 	"github.com/init-kaushal/poirot/internal/connector"
 	"github.com/init-kaushal/poirot/internal/connector/k8s"
+	ocpkg "github.com/init-kaushal/poirot/internal/connector/opencost"
 	"github.com/init-kaushal/poirot/internal/llm"
 	"github.com/init-kaushal/poirot/internal/metrics"
 	"github.com/init-kaushal/poirot/internal/report"
@@ -385,6 +387,104 @@ func TestRunNoAPIKeyRendersBanner(t *testing.T) {
 	dmd, err := det.Report.Markdown()
 	require.NoError(t, err)
 	require.NotContains(t, string(dmd), "⚠️ AI analysis")
+}
+
+// fakeOpencost is a hermetic opencost connector stub returning canned
+// allocation JSON, switching on the "window" arg like fakePromql does on expr.
+type fakeOpencost struct{}
+
+func (fakeOpencost) Name() string { return "opencost" }
+
+func (fakeOpencost) Probe(context.Context) connector.Availability {
+	return connector.Availability{State: connector.StateAvailable}
+}
+
+func (fakeOpencost) Capabilities() []connector.Capability { return nil }
+
+func (fakeOpencost) Query(_ context.Context, _ string, args json.RawMessage) (json.RawMessage, error) {
+	var a struct {
+		Window string `json:"window"`
+	}
+	_ = json.Unmarshal(args, &a)
+	if a.Window == "14d" {
+		steps := [][]ocpkg.Allocation{
+			{{Namespace: "team", ControllerKind: "", TotalCost: 40}},
+			{{Namespace: "team", ControllerKind: "", TotalCost: 80}},
+		}
+		return json.Marshal(steps)
+	}
+	steps := [][]ocpkg.Allocation{{{
+		Namespace: "team", Controller: "web", ControllerKind: "deployment",
+		CPUCoreRequest: 1, CPUCoreUsage: 0.05, RAMByteRequest: 1 << 30, RAMByteUsage: 1 << 27,
+		CPUCost: 20, RAMCost: 5, TotalCost: 25,
+	}}}
+	return json.Marshal(steps)
+}
+
+func costWorkloadSrc() K8sSource {
+	replicas := int32(2)
+	cs := fake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team"}},
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "team"},
+			Spec:       appsv1.DeploymentSpec{Replicas: &replicas},
+		},
+	)
+	return k8s.NewWithClient(cs, "ctx", k8s.Scope{Lookback: time.Hour})
+}
+
+func TestRunPopulatesCostMetaMeasured(t *testing.T) {
+	cfg := testConfig()
+	cfg.Connectors.OpenCost.URL = "auto" // explicit for clarity — config.Default() already sets "auto"
+
+	res, err := Run(context.Background(), Options{Config: cfg, Version: "t", K8s: costWorkloadSrc(), OpenCost: fakeOpencost{}})
+	require.NoError(t, err)
+	require.NotNil(t, res.Report.Meta.Cost)
+	require.Equal(t, "measured", res.Report.Meta.Cost.Basis)
+
+	// Pin the join: MonthlyTotal is derived by summing snap.Cost.Workloads, so
+	// this can only be (20+5)*30/7 if the fixture's team/web Deployment was
+	// correctly joined (by Namespace+Controller+ControllerKind) to the
+	// allocation row {CPUCost:20, RAMCost:5}. With no measured workloads
+	// (a silently broken join), MonthlyTotal would sum an empty slice => 0.
+	require.InDelta(t, (20.0+5.0)*30.0/7.0, res.Report.Meta.Cost.MonthlyTotal, 0.01,
+		"MonthlyTotal must reflect the joined team/web workload's allocation row, not an empty measured set")
+
+	var hasCost bool
+	var hasWebFinding bool
+	for _, f := range res.Report.Findings {
+		if f.Domain == "cost" {
+			hasCost = true
+		}
+		if f.Object.Namespace == "team" && f.Object.Name == "web" {
+			hasWebFinding = true
+		}
+	}
+	require.True(t, hasCost, "at least one cost/* finding (even cost/skipped-adjacent rules) must be present")
+	require.True(t, hasWebFinding, "a finding referencing the joined team/web workload must be present")
+}
+
+func TestRunCostEstimateWhenNoOpenCost(t *testing.T) {
+	cfg := testConfig()
+	cfg.Connectors.OpenCost.URL = "auto" // no fake injected -> real opencost.New discovers nothing on this clientset -> absent -> estimate
+
+	res, err := Run(context.Background(), Options{Config: cfg, Version: "t", K8s: costWorkloadSrc()})
+	require.NoError(t, err)
+	require.NotNil(t, res.Report.Meta.Cost)
+	require.Equal(t, "estimated", res.Report.Meta.Cost.Basis)
+}
+
+func TestRunNoLLMStillByteStableWithCost(t *testing.T) {
+	a, err := Run(context.Background(), Options{Config: testConfig(), Version: "t", K8s: newCrashloopSrc()})
+	require.NoError(t, err)
+	b, err := Run(context.Background(), Options{Config: testConfig(), Version: "t", K8s: newCrashloopSrc()})
+	require.NoError(t, err)
+	require.Equal(t, "disabled", a.Report.Meta.LLM.Status)
+	aj, err := normalizedJSON(a.Report)
+	require.NoError(t, err)
+	bj, err := normalizedJSON(b.Report)
+	require.NoError(t, err)
+	require.Equal(t, string(aj), string(bj))
 }
 
 func TestRunSkipsSLOWhenPromqlAbsent(t *testing.T) {

@@ -15,6 +15,15 @@ type Counts struct {
 	Info     int `json:"info"`
 }
 
+type CostMeta struct {
+	Basis                 string  `json:"basis"`
+	Currency              string  `json:"currency"`
+	Window                string  `json:"window"`
+	MonthlyTotal          float64 `json:"monthlyTotal"`
+	EstimatedMonthlyWaste float64 `json:"estimatedMonthlyWaste"`
+	Note                  string  `json:"note,omitempty"`
+}
+
 type Meta struct {
 	Tool        string    `json:"tool"`
 	Version     string    `json:"version"`
@@ -24,6 +33,7 @@ type Meta struct {
 	Namespaces  []string  `json:"namespaces"`
 	Counts      Counts    `json:"counts"`
 	LLM         *LLMMeta  `json:"llm,omitempty"`
+	Cost        *CostMeta `json:"cost,omitempty"`
 }
 
 type LLMMeta struct {

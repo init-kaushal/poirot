@@ -1,0 +1,4 @@
+{"code":200,"data":[
+  {"team":{"name":"team","properties":{"namespace":"team"},"cpuCost":30,"ramCost":10,"totalCost":40}},
+  {"team":{"name":"team","properties":{"namespace":"team"},"cpuCost":60,"ramCost":20,"totalCost":80}}
+]}

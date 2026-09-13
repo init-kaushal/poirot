@@ -7,7 +7,9 @@
 #   kubectl delete namespace poirot-demo   # teardown
 #
 # Between them these trip: reliability/{crashloop,restarts,warning-events,
-# image-pull,pending,oomkilled,latest-tag,no-limits,no-probes,single-replica,no-pdb}.
+# image-pull,pending,oomkilled,latest-tag,no-limits,no-probes,single-replica,no-pdb},
+# cost/{orphaned-lb,over-replicated,idle,rightsizing,orphaned-pvc} (the usage-dependent
+# ones — idle, rightsizing — need OpenCost or Prometheus deployed against this cluster).
 
 apiVersion: v1
 kind: Namespace
@@ -123,3 +125,56 @@ spec:
           resources:
             requests: { cpu: 25m, memory: 16Mi }
             limits:   { cpu: 50m, memory: 32Mi }
+---
+# LoadBalancer with no backends → cost/orphaned-lb
+apiVersion: v1
+kind: Service
+metadata: { name: orphaned-lb, namespace: poirot-demo }
+spec:
+  type: LoadBalancer
+  selector: { app: nothing-here }
+  ports:
+    - { port: 80, targetPort: 80 }
+---
+# 6 replicas doing nothing → cost/over-replicated / cost/idle (needs OpenCost or Prometheus for usage)
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: overreplicated, namespace: poirot-demo }
+spec:
+  replicas: 6
+  selector: { matchLabels: { app: overreplicated } }
+  template:
+    metadata: { labels: { app: overreplicated } }
+    spec:
+      containers:
+        - name: idle
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          resources:
+            requests: { cpu: 500m, memory: 64Mi }
+---
+# requests far exceed any real usage → cost/rightsizing (needs OpenCost or Prometheus for usage)
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: oversized, namespace: poirot-demo }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: oversized } }
+  template:
+    metadata: { labels: { app: oversized } }
+    spec:
+      containers:
+        - name: idle
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          resources:
+            requests: { cpu: "2", memory: 4Gi }
+---
+# mounted by nothing; cost/orphaned-pvc fires once this PVC is >7 days old
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: orphaned-pvc, namespace: poirot-demo }
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests: { storage: 1Gi }

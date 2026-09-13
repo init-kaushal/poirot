@@ -1,11 +1,20 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func loadYAML(t *testing.T, body string) (*Config, error) {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "c.yaml")
+	require.NoError(t, os.WriteFile(p, []byte(body), 0o644))
+	return Load(p)
+}
 
 func TestLoadMinimalAppliesDefaults(t *testing.T) {
 	cfg, err := Load("testdata/minimal.yaml")
@@ -15,7 +24,8 @@ func TestLoadMinimalAppliesDefaults(t *testing.T) {
 	require.Equal(t, 24*time.Hour, time.Duration(cfg.Scope.Lookback))
 	require.Equal(t, []string{"kube-system", "kube-node-lease"}, cfg.Scope.Exclude)
 	require.Equal(t, "auto", cfg.Connectors.PromQL.URL)
-	require.True(t, cfg.Connectors.OpenCost.EstimateFallback)
+	require.NotNil(t, cfg.Connectors.OpenCost.EstimateFallback)
+	require.True(t, *cfg.Connectors.OpenCost.EstimateFallback)
 	require.Equal(t, "auto", cfg.Connectors.GitOps.Mode)
 	require.Equal(t, "anthropic", cfg.LLM.Provider)
 	require.Equal(t, "claude-sonnet-5", cfg.LLM.Model)
@@ -122,4 +132,28 @@ func TestValidateRejectsBadPromqlURL(t *testing.T) {
 		cfg.Connectors.PromQL.URL = ok
 		require.NoError(t, cfg.Validate(), "URL %q must be accepted", ok)
 	}
+}
+
+func TestOpenCostEstimateFallbackDefaultsTrue(t *testing.T) {
+	cfg, err := loadYAML(t, "connectors:\n  opencost:\n    url: auto\n")
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Connectors.OpenCost.EstimateFallback)
+	require.True(t, *cfg.Connectors.OpenCost.EstimateFallback)
+}
+
+func TestOpenCostEstimateFallbackFalseHonoured(t *testing.T) {
+	cfg, err := loadYAML(t, "connectors:\n  opencost:\n    url: auto\n    estimateFallback: false\n")
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Connectors.OpenCost.EstimateFallback)
+	require.False(t, *cfg.Connectors.OpenCost.EstimateFallback)
+}
+
+func TestValidateRejectsBadOpenCostURL(t *testing.T) {
+	_, err := loadYAML(t, "connectors:\n  opencost:\n    url: Auto\n")
+	require.ErrorContains(t, err, "connectors.opencost.url")
+}
+
+func TestValidateRejectsNonPositiveRates(t *testing.T) {
+	_, err := loadYAML(t, "connectors:\n  opencost:\n    url: auto\n    rates:\n      cpuHour: 0\n      memGiBHour: 0.004\n")
+	require.ErrorContains(t, err, "connectors.opencost.rates")
 }

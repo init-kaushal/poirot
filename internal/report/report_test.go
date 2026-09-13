@@ -87,3 +87,18 @@ func TestJSONRoundTrips(t *testing.T) {
 	require.Equal(t, "k8s", back.Connectors[0].Name)
 	require.Len(t, back.Findings, 1)
 }
+
+func TestMetaCostOmitEmpty(t *testing.T) {
+	rep := Build(Meta{Version: "1.0.0"}, nil, nil)
+	rep.Meta.Cost = nil
+	b, err := rep.JSON()
+	require.NoError(t, err)
+	require.NotContains(t, string(b), `"cost"`)
+
+	rep2 := Build(Meta{Version: "1.0.0"}, nil, nil)
+	rep2.Meta.Cost = &CostMeta{Basis: "estimated"}
+	b2, err := rep2.JSON()
+	require.NoError(t, err)
+	require.Contains(t, string(b2), `"cost"`)
+	require.Contains(t, string(b2), `"basis": "estimated"`)
+}

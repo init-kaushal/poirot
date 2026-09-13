@@ -45,7 +45,20 @@ connectors:
   #   http://…  — an explicit URL you can already reach (e.g. a kubectl port-forward)
   #   disabled  — skip metrics entirely; slo analyzer reports as skipped
   promql: { url: auto }
-  # opencost / alertmanager / gitops arrive in later milestones (parsed, unused now).
-  # opencost:     { url: auto, estimateFallback: true }
+
+  # Cost analyzer (M4). One of:
+  #   auto      — discover an OpenCost Service through the Kubernetes API
+  #   http://…  — an explicit URL you can already reach
+  #   disabled  — skip the OpenCost connector only; the cost analyzer still
+  #               runs and estimates from resource requests (see
+  #               estimateFallback below to turn estimation off too)
+  opencost:
+    url: auto               # auto | disabled | http(s)://…
+    estimateFallback: true   # false => skip estimating too, emit cost/skipped when OpenCost is absent/disabled
+    # rates:                   # optional flat override; wins for every node type when set
+    #   cpuHour: 0.031
+    #   memGiBHour: 0.004
+
+  # alertmanager / gitops arrive in later milestones (parsed, unused now).
   # alertmanager: { url: auto }
   # gitops:       { mode: auto }

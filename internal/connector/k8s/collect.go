@@ -89,6 +89,11 @@ func (c *Connector) Collect(ctx context.Context) (*snapshot.Snapshot, error) {
 			return nil, fmt.Errorf("list services in %s: %w", ns, err)
 		}
 		snap.Services = append(snap.Services, svcs.Items...)
+
+		jobs, jerr := c.cs.BatchV1().Jobs(ns).List(ctx, metav1.ListOptions{})
+		if jerr == nil {
+			snap.Jobs = append(snap.Jobs, jobs.Items...)
+		}
 	}
 
 	c.collectFlaggedPodLogs(ctx, snap)

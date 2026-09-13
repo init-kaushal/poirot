@@ -13,12 +13,15 @@ import (
 	"github.com/init-kaushal/poirot/internal/agent"
 	"github.com/init-kaushal/poirot/internal/analyzer"
 	"github.com/init-kaushal/poirot/internal/analyzer/change"
+	analyzercost "github.com/init-kaushal/poirot/internal/analyzer/cost"
 	"github.com/init-kaushal/poirot/internal/analyzer/reliability"
 	"github.com/init-kaushal/poirot/internal/analyzer/slo"
 	"github.com/init-kaushal/poirot/internal/config"
 	"github.com/init-kaushal/poirot/internal/connector"
 	"github.com/init-kaushal/poirot/internal/connector/k8s"
+	"github.com/init-kaushal/poirot/internal/connector/opencost"
 	"github.com/init-kaushal/poirot/internal/connector/promql"
+	"github.com/init-kaushal/poirot/internal/cost"
 	"github.com/init-kaushal/poirot/internal/llm"
 	"github.com/init-kaushal/poirot/internal/llm/anthropic"
 	"github.com/init-kaushal/poirot/internal/llm/openaicompat"
@@ -39,10 +42,11 @@ type K8sSource interface {
 
 // Options configures a single Run.
 type Options struct {
-	Config  *config.Config
-	Version string
-	K8s     K8sSource           // nil => built from Config.Cluster + Config.Scope
-	Promql  connector.Connector // nil => built from Config.Connectors.PromQL
+	Config   *config.Config
+	Version  string
+	K8s      K8sSource           // nil => built from Config.Cluster + Config.Scope
+	Promql   connector.Connector // nil => built from Config.Connectors.PromQL
+	OpenCost connector.Connector // nil => built from Config.Connectors.OpenCost
 	// LLM overrides the provider built from Config.LLM (test seam). When set, it
 	// is used even if Config.LLM.Provider is "none"; Meta.LLM then reflects the
 	// injected client (its Model()), not the config.
@@ -96,6 +100,19 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		})
 	}
 	reg.Register(pc)
+	oc := opts.OpenCost
+	if oc == nil {
+		url := cfg.Connectors.OpenCost.URL
+		if url == "" {
+			url = "auto"
+		}
+		oc = opencost.New(opencost.Options{
+			URL:        url,
+			Clientset:  src.Clientset(),
+			Namespaces: cfg.Scope.Namespaces,
+		})
+	}
+	reg.Register(oc)
 	statuses := reg.Probe(ctx)
 	for _, s := range statuses {
 		if s.Name == "k8s" && s.Availability.State != connector.StateAvailable {
@@ -115,9 +132,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 		snap.Metrics = metrics.Collect(ctx, pc, metrics.DefaultPack(), snap.Meta.CollectedAt, backend)
 	}
+	snap.Cost = cost.Collect(ctx, snap, reg, cfg.Connectors.OpenCost)
 
 	// 3. Analyze
-	analyzers := []analyzer.Analyzer{reliability.New(), change.New(), slo.New()}
+	analyzers := []analyzer.Analyzer{reliability.New(), change.New(), slo.New(), analyzercost.New()}
 	var findings []analyzer.Finding
 	for _, a := range analyzers {
 		if !reg.Satisfied(a.Requires()) {
@@ -170,6 +188,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	rep := report.Build(meta, statuses, findings)
 	rep.Summary = summary
 	rep.Meta.LLM = llmMeta
+	if snap.Cost != nil {
+		rep.Meta.Cost = cost.From(snap.Cost, rep.Findings)
+	}
 	return &Result{Report: rep, ExitCode: rep.ExitCode(cfg.Output.FailOn)}, nil
 }
 

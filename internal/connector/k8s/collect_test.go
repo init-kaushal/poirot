@@ -8,8 +8,12 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func TestCollectGathersScopedObjects(t *testing.T) {
@@ -77,4 +81,18 @@ func TestCollectExplicitNamespaces(t *testing.T) {
 	require.Equal(t, []string{"a"}, snap.Meta.Namespaces)
 	require.Len(t, snap.Deployments, 1)
 	require.Equal(t, "da", snap.Deployments[0].Name)
+}
+
+func TestCollectJobsBestEffort(t *testing.T) {
+	cs := fake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team"}},
+	)
+	// Jobs list fails; core lists succeed.
+	cs.PrependReactor("list", "jobs", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "jobs"}, "", nil)
+	})
+	c := NewWithClient(cs, "ctx", Scope{Lookback: time.Hour})
+	snap, err := c.Collect(context.Background())
+	require.NoError(t, err)   // run continues
+	require.Nil(t, snap.Jobs) // Jobs simply absent
 }
