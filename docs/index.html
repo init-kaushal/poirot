@@ -132,6 +132,10 @@
   .hero h1 em { font-style: italic; color: var(--lamp); }
   .hero-sub { max-width: 56ch; font-size: 1.14rem; color: var(--ink-dim); }
   .hero-sub code { color: var(--ink); }
+  .hero-note { display: flex; gap: 12px; align-items: flex-start; max-width: 54ch; padding: 14px 16px; background: var(--bg-raise); border: 1px solid var(--line); border-left: 3px solid var(--lamp); border-radius: 4px; }
+  .hero-note .icon { color: var(--lamp); }
+  .hero-note span { font-size: 13.5px; line-height: 1.65; color: var(--ink-dim); }
+  .hero-note em { color: var(--ink); font-style: italic; }
   .cta-row { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 4px; }
   .btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 20px; border-radius: 4px; font-size: 15px; font-weight: 600; text-decoration: none; border: 1px solid transparent; transition: transform .15s ease, background .15s ease, border-color .15s ease; }
   .btn .icon { width: 16px; height: 16px; }
@@ -164,6 +168,11 @@
   .parrow { flex: none; width: 34px; display: flex; align-items: center; justify-content: center; color: var(--line); margin-top: 26px; }
   .parrow .icon { width: 18px; height: 18px; }
   @media (max-width: 620px) { .pipeline { display: none; } }
+
+  .maxim { display: flex; gap: 16px; align-items: flex-start; max-width: 640px; margin: 0 auto 48px; padding: 16px 20px; background: var(--bg-raise); border: 1px solid var(--line); border-radius: 6px; }
+  .maxim .icon { color: var(--lamp); margin-top: 6px; }
+  .maxim p { font-family: "Fraunces", serif; font-style: italic; font-size: 1.02rem; line-height: 1.55; color: var(--ink-dim); }
+  .maxim p::first-line { color: var(--ink); }
 
   /* -------------------------- method (numbered) -------------------------- */
   .method { display: flex; flex-direction: column; }
@@ -235,8 +244,11 @@
   .term pre { margin: 0; padding: 20px; overflow-x: auto; font-size: 14px; line-height: 1.75; color: var(--ink-dim); }
   .term .c1 { color: var(--lamp); } .term .c2 { color: var(--muted); } .term .out { color: var(--ink-dim); }
 
-  /* -------------------------------- footer -------------------------------- */
-  footer { padding: 48px 0 64px; border-top: 1px solid var(--line); }
+  /* -------------------------------- sign-off / footer -------------------------------- */
+  .sign-off { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 44px 0 0; color: var(--muted); }
+  .sign-off .icon { color: var(--lamp); opacity: 0.85; }
+  .sign-off span { font-family: "JetBrains Mono", monospace; font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; }
+  footer { padding: 24px 0 64px; border-top: none; }
   .foot-row { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; flex-wrap: wrap; }
   .foot-brand { display: flex; align-items: center; gap: 8px; font-family: "Fraunces", serif; font-size: 1.15rem; }
   .foot-brand .icon { width: 18px; height: 18px; color: var(--lamp); }
@@ -290,6 +302,7 @@
   <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="11" x2="12" y2="16"/><circle cx="12" cy="8" r="0.9" fill="currentColor" stroke="none"/></symbol>
   <symbol id="i-arrow" viewBox="0 0 24 24"><line x1="3" y1="12" x2="19" y2="12"/><polyline points="13,6 19,12 13,18"/></symbol>
   <symbol id="i-external" viewBox="0 0 24 24"><path d="M9 6H5.5a1.5 1.5 0 0 0-1.5 1.5v11A1.5 1.5 0 0 0 5.5 20h11a1.5 1.5 0 0 0 1.5-1.5V15"/><path d="M13 4h7v7"/><line x1="20" y1="4" x2="11" y2="13"/></symbol>
+  <symbol id="i-moustache" viewBox="0 0 48 20"><path d="M24,11 C22,5 17,4 13,7 C10,9.3 10,12.5 13,12.8 C16,13.1 17,10.5 15,9.5"/><path d="M24,11 C26,5 31,4 35,7 C38,9.3 38,12.5 35,12.8 C32,13.1 31,10.5 33,9.5"/></symbol>
 </defs>
 </svg>
 
@@ -313,13 +326,20 @@
 <div class="hero" id="top">
   <svg class="hero-glyph" viewBox="0 0 24 24" stroke="currentColor" stroke-width="0.6" fill="none"><use href="#i-glass"/></svg>
   <div class="hero-inner">
-    <span class="eyebrow">Case file · read-only investigation</span>
+    <span class="eyebrow">Case file · order, method, no writes & detective flair</span>
     <h1>Something is wrong with your cluster.<br>It's been leaving <em>evidence</em>.</h1>
     <p class="hero-sub">
       <code>poirot</code> reads your kubeconfig, examines what's actually running, and writes up
       what it finds — probable cause, confidence, what it's costing you — the way a good
       investigator would. It never issues a write. Not one <code>create</code>, not one
       <code>patch</code> — <code>get</code>, <code>list</code>, <code>watch</code>, and nothing else.
+    </p>
+    <p class="hero-note">
+      <svg class="icon" width="30" height="12" style="stroke-width:1.5;margin-top:3px"><use href="#i-moustache"/></svg>
+      <span>Named for Hercule Poirot, not Sherlock Holmes — which is why there's a magnifying glass
+      in the corner he'd never have carried. Poirot solved cases with <em>order, method, and the
+      little grey cells</em>, not props and footprints. This tool tries to do the same: read what's
+      already there, reason about it, and say so plainly.</span>
     </p>
     <div class="cta-row">
       <a class="btn btn-primary" href="https://github.com/init-kaushal/poirot" target="_blank" rel="noopener"><svg class="icon" width="16" height="16"><use href="#i-github"/></svg>View source</a>
@@ -349,9 +369,17 @@
       <div class="parrow"><svg class="icon" width="18" height="18"><use href="#i-arrow"/></svg></div>
       <div class="pnode"><div class="disc"><svg class="icon" width="22" height="22"><use href="#i-chart"/></svg></div><div class="lbl">Analyze</div><div class="sub">4 rule sets</div></div>
       <div class="parrow"><svg class="icon" width="18" height="18"><use href="#i-arrow"/></svg></div>
-      <div class="pnode opt"><div class="disc"><svg class="icon" width="22" height="22"><use href="#i-bulb"/></svg></div><div class="lbl">Investigate</div><div class="sub">optional</div></div>
+      <div class="pnode opt"><div class="disc"><svg class="icon" width="22" height="22"><use href="#i-bulb"/></svg></div><div class="lbl">Investigate</div><div class="sub">grey cells</div></div>
       <div class="parrow"><svg class="icon" width="18" height="18"><use href="#i-arrow"/></svg></div>
       <div class="pnode"><div class="disc"><svg class="icon" width="22" height="22"><use href="#i-doc"/></svg></div><div class="lbl">Report</div><div class="sub">json + md</div></div>
+    </div>
+
+    <div class="maxim">
+      <svg class="icon" width="30" height="12" style="stroke-width:1.5"><use href="#i-moustache"/></svg>
+      <p>"Order and method" was Poirot's own obsession — everything squared away, nothing left to
+        chance. Steps 1 through 3 inherit it literally: the same snapshot always produces the same
+        findings, in the same order, down to the byte. Step 4 is the one thing even Poirot couldn't
+        guarantee twice.</p>
     </div>
 
     <div class="method">
@@ -372,11 +400,12 @@
           and cost. No network calls, no LLM — pure functions over what was collected.</p>
       </div></div>
       <div class="step"><div class="step-n">04</div><div>
-        <h3><svg class="icon" width="19" height="19"><use href="#i-bulb"/></svg>Investigate <span class="opt">optional</span></h3>
+        <h3><svg class="icon" width="19" height="19"><use href="#i-bulb"/></svg>Investigate <span class="opt">optional</span><span class="opt">the little grey cells</span></h3>
         <p>Handed only read tools — snapshot lookups, logs, the same metrics/cost queries — an LLM is
           turned loose per flagged object to work out probable cause, confidence, and remediation.
-          Bounded by a tool-call, token, and wall-clock budget; it degrades to "not investigated"
-          rather than run forever.</p>
+          No new evidence is gathered here, same as Poirot: the clues are already on the table,
+          the work is reasoning about them. Bounded by a tool-call, token, and wall-clock budget;
+          it degrades to "not investigated" rather than run forever.</p>
       </div></div>
       <div class="step"><div class="step-n">05</div><div>
         <h3><svg class="icon" width="19" height="19"><use href="#i-doc"/></svg>Report</h3>
@@ -409,7 +438,7 @@ reference "registry.invalid/nope:v0": dial tcp: lookup registry.invalid on
 192.168.5.1:53: no such host</div>
           <div class="deduction">
             <svg class="icon" width="17" height="17"><use href="#i-bulb"/></svg>
-            <div><span class="who">Investigator</span>
+            <div><span class="who">Poirot</span>
             <p>The image reference points to a non-existent registry (<code>registry.invalid</code>),
               causing DNS resolution failure — as the error itself states. Confidence: high.</p></div>
           </div>
@@ -429,7 +458,7 @@ reference "registry.invalid/nope:v0": dial tcp: lookup registry.invalid on
           <div class="kv">pvc.status.phase → "Pending"</div>
           <div class="deduction">
             <svg class="icon" width="17" height="17"><use href="#i-bulb"/></svg>
-            <div><span class="who">Investigator</span>
+            <div><span class="who">Poirot</span>
             <p>The PVC is Pending because no PersistentVolume exists for the <code>local-path</code>
               storage class — a correct inference the model reached on its own, from a bare status field.</p></div>
           </div>
@@ -449,7 +478,7 @@ reference "registry.invalid/nope:v0": dial tcp: lookup registry.invalid on
           <div class="kv">lastState.terminated → { "exitCode": 137, "reason": "OOMKilled" }</div>
           <div class="deduction">
             <svg class="icon" width="17" height="17"><use href="#i-clock"/></svg>
-            <div><span class="who">Investigator</span>
+            <div><span class="who">Poirot</span>
             <p>Budget ran out before this object's turn. Stubbed as <code>not investigated</code> —
               never guessed at.</p></div>
           </div>
@@ -520,6 +549,14 @@ reference "registry.invalid/nope:v0": dial tcp: lookup registry.invalid on
         investigation off cleanly. Whatever got enriched, stays enriched; the rest says
         <code>not investigated</code> instead of a stalled process.</p></div></div>
     </div>
+
+    <div class="maxim">
+      <svg class="icon" width="30" height="12" style="stroke-width:1.5"><use href="#i-moustache"/></svg>
+      <p>Every Poirot novel ends the same way: everyone gathered in one room, and one sentence
+        naming who did it. When the investigation finishes clean, that's what the summary is —
+        a headline and a short, ordered list of what to do about it. Nothing left implied.</p>
+    </div>
+
     <div class="exit-codes">
       <div class="exit-code"><div class="n ok">0</div><div class="d">clean — nothing at or above the gate</div></div>
       <div class="exit-code"><div class="n warn">1</div><div class="d">warning-level findings present</div></div>
@@ -545,6 +582,11 @@ reference "registry.invalid/nope:v0": dial tcp: lookup registry.invalid on
 
 </div>
 
+<div class="sign-off">
+  <svg class="icon" width="40" height="16" style="stroke-width:1.4"><use href="#i-moustache"/></svg>
+  <span>Order. Method. The little grey cells.</span>
+</div>
+
 <footer>
   <div class="wrap">
     <div class="foot-row">
@@ -557,7 +599,7 @@ reference "registry.invalid/nope:v0": dial tcp: lookup registry.invalid on
     </div>
     <p class="foot-note">A portfolio project. Reliability, SLO, and change-risk analysis shipped first;
       an optional LLM investigation layer and OpenCost-backed cost analysis followed. Alertmanager and
-      GitOps drift detection are next.</p>
+      GitOps drift detection are next. And yes — Poirot is Belgian, not French. He would want that noted.</p>
   </div>
 </footer>
 
