@@ -3,6 +3,9 @@
 Point-in-time reliability, cost, and change-risk assessment report for a Kubernetes cluster.
 Give it a kubeconfig and a small `poirot.yaml`; run `poirot run`; read `report.md`.
 
+**[→ init-kaushal.github.io/poirot](https://init-kaushal.github.io/poirot/)** — the case file,
+with real findings pulled from an actual run.
+
 ## Quickstart
 
 ```bash
